@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""intellij-sessions: shut IntelliJ down and bring every Claude session back.
+
+Usage:
+  intellij-sessions save [--dry-run] [--force]
+      Record every Claude session running in an IntelliJ terminal, stop them,
+      and quit IntelliJ. Refuses while a session is busy, unless --force.
+  intellij-sessions restore [--dry-run]
+      Start IntelliJ (through the intellij script beside this one) with each recorded project and
+      resume each session, with its original flags, in a terminal there.
+  intellij-sessions show
+      List the sessions running now and the ones last saved.
+
+How restore works: each session's command is queued for its directory in
+~/.cache/load-project/pending, the same queue load-project uses. IntelliJ
+reopens its projects and their terminal tabs, and the load-project hook (shell/agentic-intellij.sh) runs the
+next queued command in each new terminal there. If a directory has more
+sessions than restored tabs, open another terminal tab in that window and the
+next session starts in it.
+
+save can run from inside an IntelliJ terminal, even from a Claude session: the
+part that stops sessions and quits IntelliJ detaches first, so it survives.
+"""
+import hashlib, json, os, shlex, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+STATE_DIR = os.path.join(HOME, ".cache", "intellij-sessions")
+STATE = os.path.join(STATE_DIR, "state.json")
+LOG = os.path.join(HOME, "logs", "intellij-sessions.log")
+PENDING = os.path.join(HOME, ".cache", "load-project", "pending")
+SESSIONS = os.path.join(HOME, ".claude", "sessions")
+INTELLIJ = os.path.join(os.path.dirname(os.path.realpath(__file__)), "intellij")
+BUNDLE_ID = "com.jetbrains.intellij"
+IDE_RE = "/Contents/MacOS/idea"
+
+# Same prefix load-project queues: a command eval'd while the shell rc file is still
+# sourcing runs before direnv's hook, so the project's .envrc is loaded here.
+DIRENV = 'if command -v direnv >/dev/null 2>&1; then eval "$(direnv export ${ZSH_VERSION:+zsh}${BASH_VERSION:+bash})"; fi; '
+
+# Options that pick or name the session; restore supplies its own.
+DROP_WITH_VALUE = {"-n", "--name", "--session-id"}
+DROP_OPTIONAL_VALUE = {"-r", "--resume"}
+DROP_FLAG = {"-c", "--continue", "--fork-session"}
+
+
+def sh(*args):
+    return subprocess.run(args, capture_output=True, text=True).stdout
+
+
+def say(msg):
+    print(f"intellij-sessions: {msg}", flush=True)
+
+
+def log(msg):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+
+
+def notify(msg):
+    subprocess.run(["osascript", "-e",
+                    f"display notification {json.dumps(msg)} with title \"intellij-sessions\""],
+                   capture_output=True)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def ancestors(pid):
+    seen = []
+    while pid > 1:
+        seen.append(pid)
+        out = sh("ps", "-o", "ppid=", "-p", str(pid)).strip()
+        pid = int(out) if out.isdigit() else 0
+    return seen
+
+
+def ide_pids():
+    out = sh("ps", "-axo", "pid=,command=")
+    return [int(l.split(None, 1)[0]) for l in out.splitlines()
+            if IDE_RE in l and "IntelliJ IDEA" in l and l.split(None, 1)[1].split(IDE_RE)[1][:1] in ("", " ")]
+
+
+def queue_key(path):
+    # The load-project hook (shell/agentic-intellij.sh) keys on `printf '%s' "$(pwd -P)" | shasum`.
+    return hashlib.sha1(os.path.realpath(path).encode()).hexdigest()
+
+
+def clean_args(argv):
+    """Drop the options that select or name a session; keep everything else."""
+    kept, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        name = a.split("=", 1)[0]
+        if name in DROP_FLAG:
+            i += 1
+        elif name in DROP_WITH_VALUE:
+            i += 1 if "=" in a else 2
+        elif name in DROP_OPTIONAL_VALUE:
+            i += 1
+            if "=" not in a and i < len(argv) and not argv[i].startswith("-"):
+                i += 1
+        else:
+            kept.append(a)
+            i += 1
+    return kept
+
+
+def running_sessions():
+    """Claude sessions in IntelliJ terminals, from Claude's per-process records."""
+    found = []
+    # -a: macOS pgrep otherwise skips its own ancestors, i.e. the session running this.
+    for pid in sh("pgrep", "-a", "-x", "claude").split():
+        pid = int(pid)
+        rec_path = os.path.join(SESSIONS, f"{pid}.json")
+        if not os.path.exists(rec_path):
+            continue
+        if "TERMINAL_EMULATOR=JetBrains-JediTerm" not in sh("ps", "eww", "-o", "command=", "-p", str(pid)):
+            continue
+        rec = json.load(open(rec_path))
+        argv = sh("ps", "-o", "args=", "-p", str(pid)).split()
+        if not argv or not rec.get("sessionId"):
+            continue
+        cwd = rec.get("cwd") or ""
+        cmd = [argv[0]] + clean_args(argv[1:]) + ["--resume", rec["sessionId"]]
+        if rec.get("name"):
+            cmd += ["-n", rec["name"]]
+        line = " ".join(shlex.quote(c) for c in cmd)
+        if os.path.exists(os.path.join(cwd, ".envrc")):
+            line = DIRENV + line
+        found.append({"pid": pid, "name": rec.get("name"), "sessionId": rec["sessionId"],
+                      "cwd": cwd, "status": rec.get("status"), "command": line})
+    return sorted(found, key=lambda s: (s["cwd"], s["name"] or ""))
+
+
+def tilde(p):
+    return "~" + p[len(HOME):] if p.startswith(HOME) else p
+
+
+def table(sessions):
+    for s in sessions:
+        print(f"  {s['name'] or '(unnamed)':24} {s.get('status') or '':6} {tilde(s['cwd'])}")
+
+
+# ---------------------------------------------------------------- save
+
+def save(dry, force):
+    if not ide_pids():
+        say("IntelliJ isn't running; nothing to save")
+        return 1
+    sessions = running_sessions()
+    mine = set(ancestors(os.getpid()))
+    busy = [s for s in sessions if s["status"] == "busy" and s["pid"] not in mine]
+    say(f"{len(sessions)} Claude session(s) in IntelliJ terminals:")
+    table(sessions)
+    if busy and not force:
+        say("these sessions are busy; let them finish or pass --force: "
+            + ", ".join(s["name"] or str(s["pid"]) for s in busy))
+        return 1
+    if dry:
+        say("dry run: restore would queue these commands")
+        for s in sessions:
+            print(f"  [{tilde(s['cwd'])}] {s['command']}")
+        return 0
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    if os.path.exists(STATE):
+        os.replace(STATE, STATE + ".prev")
+    with open(STATE, "w") as f:
+        json.dump({"savedAt": time.strftime("%Y-%m-%dT%H:%M:%S"), "sessions": sessions}, f, indent=2)
+    say(f"saved to {tilde(STATE)}")
+    log(f"saved {len(sessions)} session(s)")
+
+    if any(p in mine for p in ide_pids()) or any(s["pid"] in mine for s in sessions):
+        # Quitting IntelliJ ends this terminal; finish from a detached process.
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "_quit"],
+                         stdin=subprocess.DEVNULL, stdout=open(LOG, "a"), stderr=subprocess.STDOUT,
+                         start_new_session=True)
+        say("closing sessions and IntelliJ in the background; this terminal ends with them")
+        say("when it's done, run: intellij-sessions restore")
+        return 0
+    return quit_all()
+
+
+def osa(script):
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    if r.returncode:
+        log(f"osascript failed ({r.returncode}): {r.stderr.strip()}")
+    return r.returncode == 0
+
+
+def wait_gone(seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline and ide_pids():
+        time.sleep(1)
+    return not ide_pids()
+
+
+def quit_all():
+    """Quit IntelliJ; its terminals closing is what ends the Claude sessions.
+
+    Sessions are never stopped directly: if IntelliJ refuses to quit, every
+    session keeps running and nothing is lost.
+    """
+    time.sleep(2)  # let a calling session print its last words
+    sessions = json.load(open(STATE))["sessions"]
+
+    log("asking IntelliJ to quit (AppleScript)")
+    osa(f'tell application id "{BUNDLE_ID}" to quit')
+    gone = wait_gone(20)
+    if not gone and ide_pids():
+        log("no exit after 20s; sending cmd-Q to IntelliJ")
+        osa('tell application "System Events" to tell process "idea"\n'
+            '  set frontmost to true\n'
+            '  keystroke "q" using {command down}\n'
+            'end tell')
+        gone = wait_gone(100)
+
+    if gone:
+        msg = f"IntelliJ closed with {len(sessions)} session(s) saved. Run: intellij-sessions restore"
+    else:
+        msg = ("IntelliJ didn't quit (a dialog may be waiting). Your Claude sessions are "
+               "still running; nothing was stopped. Quit IntelliJ yourself, then run: "
+               "intellij-sessions restore")
+    log(msg)
+    notify(msg)
+    print(msg)
+    return 0
+
+
+# ---------------------------------------------------------------- restore
+
+def raise_terminal(path):
+    """Raise the project's window and show its Terminal (alt-F12), as load-project does."""
+    script = '''on run argv
+  set marker to "[" & (item 1 of argv) & "]"
+  tell application "System Events"
+    tell process "idea"
+      if (count of (windows whose name contains marker)) = 0 then return "no"
+      set w to first window whose name contains marker
+      perform action "AXRaise" of w
+      set frontmost to true
+    end tell
+    delay 0.5
+    key code 111 using {option down}
+  end tell
+  return "yes"
+end run'''
+    out = subprocess.run(["osascript", "-", tilde(path)], input=script, capture_output=True, text=True).stdout
+    return out.strip() == "yes"
+
+
+def queued(path):
+    try:
+        with open(os.path.join(PENDING, queue_key(path))) as f:
+            return len([l for l in f if l.strip()])
+    except FileNotFoundError:
+        return 0
+
+
+def restore(dry):
+    if not os.path.exists(STATE):
+        say(f"nothing saved yet ({tilde(STATE)})")
+        return 1
+    state = json.load(open(STATE))
+    live = {s["sessionId"] for s in running_sessions()}
+    by_dir, skipped = {}, []
+    for s in state["sessions"]:
+        if s["sessionId"] in live:
+            skipped.append(f"{s['name'] or s['sessionId']} (already running)")
+        elif not os.path.isdir(s["cwd"]):
+            skipped.append(f"{s['name'] or s['sessionId']} (directory gone: {tilde(s['cwd'])})")
+        else:
+            by_dir.setdefault(s["cwd"], []).append(s)
+    say(f"restoring {sum(map(len, by_dir.values()))} session(s) saved {state['savedAt']}:")
+    table([s for ss in by_dir.values() for s in ss])
+    for k in skipped:
+        say(f"skipping {k}")
+    if dry:
+        for d, ss in by_dir.items():
+            for s in ss:
+                print(f"  [{tilde(d)}] {s['command']}")
+        return 0
+    if not by_dir:
+        return 0
+
+    already_open = bool(ide_pids())
+    os.makedirs(PENDING, exist_ok=True)
+    for d, ss in by_dir.items():
+        with open(os.path.join(PENDING, queue_key(d)), "w") as f:
+            f.write("".join(s["command"] + "\n" for s in ss))
+    subprocess.run([INTELLIJ, *by_dir])
+
+    if already_open:
+        # Open windows don't get fresh terminal tabs, so nothing picks up the queue by itself.
+        say("IntelliJ was already open, so open a new terminal tab (⌘T in the Terminal) "
+            "in each window below; each new tab resumes the next queued session:")
+        for d, ss in by_dir.items():
+            say(f"  {tilde(d)}: {len(ss)} tab(s) ({', '.join(s['name'] or s['sessionId'] for s in ss)})")
+        log(f"queued {sum(map(len, by_dir.values()))} with IntelliJ already open")
+        return 0
+
+    # Restored terminal tabs take the queued commands. A project whose queue is
+    # untouched a while after IntelliJ came up gets its Terminal opened once.
+    start, poked = time.time(), set()
+    while time.time() - start < 240 and any(queued(d) for d in by_dir):
+        time.sleep(3)
+        if time.time() - start > 60:
+            for d in by_dir:
+                if d not in poked and queued(d) == len(by_dir[d]) and raise_terminal(d):
+                    poked.add(d)
+    left = {d: queued(d) for d in by_dir if queued(d)}
+    done = sum(map(len, by_dir.values())) - sum(left.values())
+    say(f"{done} session(s) started")
+    for d, n in left.items():
+        say(f"{n} still queued for {tilde(d)}: open a terminal tab in that window "
+            "and each new tab starts the next one")
+    log(f"restored {done}, still queued {sum(left.values())}")
+    return 0 if not left else 2
+
+
+# ---------------------------------------------------------------- show
+
+def show():
+    now = running_sessions()
+    say(f"running now in IntelliJ terminals ({len(now)}):")
+    table(now)
+    if os.path.exists(STATE):
+        st = json.load(open(STATE))
+        say(f"last saved {st['savedAt']} ({len(st['sessions'])}):")
+        table(st["sessions"])
+    else:
+        say("nothing saved yet")
+    return 0
+
+
+def main(argv):
+    cmd = argv[0] if argv else "show"
+    flags = set(argv[1:])
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    if cmd == "save":
+        return save("--dry-run" in flags or "-n" in flags, "--force" in flags)
+    if cmd == "restore":
+        return restore("--dry-run" in flags or "-n" in flags)
+    if cmd == "show":
+        return show()
+    if cmd == "_quit":
+        return quit_all()
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

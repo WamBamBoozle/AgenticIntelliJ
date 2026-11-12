@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""intellij-bsp: switch IntelliJ projects from sbt import to BSP, so the IDE
+shares each checkout's one sbt server (see sbt-bsp) instead of running
+its own sbt shell.
+
+Usage:
+  intellij-bsp [--dry-run] <project dir> ...
+  intellij-bsp [--dry-run] --all      every project in the last `intellij-sessions save`
+  intellij-bsp --undo <project dir> ...
+
+The project must not be open in IntelliJ, since the IDE rewrites .idea/ when it
+closes a project. Close its window (File > Close Project), or quit IntelliJ with
+`intellij-sessions save`, first.
+
+For each sbt build linked in .idea/sbt.xml, it runs sbt-bsp-setup (so
+.bsp/sbt.json runs sbt-bsp, and the team's .idea/sbt.xml is hidden from
+git), writes .idea/bsp.xml pointing at that connection file, and moves
+.idea/sbt.xml aside to .idea/sbt.xml.pre-bsp. IntelliJ loads the build over BSP
+the next time it opens the project. --undo moves sbt.xml back and removes bsp.xml.
+"""
+import json, os, re, subprocess, sys
+from xml.etree import ElementTree as ET
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, ".cache", "intellij-sessions", "state.json")
+SETUP = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sbt-bsp-setup")
+
+BSP_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="BspSettings">
+    <option name="linkedExternalProjectsSettings">
+{settings}
+    </option>
+  </component>
+</project>
+"""
+BSP_PROJECT = """      <BspProjectSettings>
+        <option name="externalProjectPath" value="{rel}" />
+        <option name="modules">
+          <set>
+            <option value="{rel}" />
+          </set>
+        </option>
+        <option name="preImportConfig" value="NoPreImport" />
+        <option name="serverConfig" value="BspConfigFile:{conn}" />
+      </BspProjectSettings>"""
+
+
+def say(msg):
+    print(f"intellij-bsp: {msg}")
+
+
+def tilde(path):
+    return "~" + path[len(HOME):] if path.startswith(HOME + "/") else path
+
+
+RECENT = os.path.join(HOME, "Library", "Application Support", "JetBrains")
+
+
+def ide_running():
+    ps = subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
+    return any(re.search(r"/IntelliJ IDEA[^/]*\.app/Contents/MacOS/idea( |$)", l) for l in ps.splitlines())
+
+
+def open_in_ide(project):
+    """True when IntelliJ has this project open. Window titles show only the
+    project's name ("backend – Foo.scala"), not its path, so map the path to a
+    name through IntelliJ's recent-projects list (opened="true", frameTitle),
+    then look for a window with that name. The list is saved only now and then,
+    so a project closed a minute ago still reads opened="true" there; the window
+    check catches that. Two open projects with the same name both read as open,
+    which errs on the safe side."""
+    if not ide_running():
+        return False
+    files = sorted(
+        (os.path.join(d, "options", "recentProjects.xml") for d in
+         (os.path.join(RECENT, n) for n in os.listdir(RECENT) if n.startswith("IntelliJIdea"))),
+        key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0)
+    if not files or not os.path.exists(files[-1]):
+        sys.exit("intellij-bsp: can't find IntelliJ's recentProjects.xml to tell which projects are open")
+    for e in ET.parse(files[-1]).getroot().iter("entry"):
+        meta = e.find("value/RecentProjectMetaInfo")
+        key = (e.get("key") or "").replace("$USER_HOME$", HOME)
+        if meta is not None and meta.get("opened") == "true" and os.path.realpath(key) == project:
+            name = re.split(r" \[| – ", meta.get("frameTitle") or "")[0].strip()
+            return not name or any(t == name or t.startswith(name + " ") for t in window_titles())
+    return False
+
+
+def window_titles():
+    out = subprocess.run(["osascript", "-e",
+        'tell application "System Events" to tell process "idea" to get name of windows'],
+        capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(f"intellij-bsp: can't read IntelliJ's window titles: {out.stderr.strip()}")
+    return [t.strip() for t in out.stdout.strip().split(", ")]
+
+
+def linked_builds(sbt_xml, project):
+    """Absolute paths of the sbt builds .idea/sbt.xml links."""
+    root = ET.parse(sbt_xml).getroot()
+    paths = [o.get("value") for o in root.iter("option") if o.get("name") == "externalProjectPath"]
+    return [os.path.normpath(p.replace("$PROJECT_DIR$", project)) for p in paths]
+
+
+def convert(project, dry):
+    idea = os.path.join(project, ".idea")
+    sbt_xml, bsp_xml = os.path.join(idea, "sbt.xml"), os.path.join(idea, "bsp.xml")
+    if not os.path.isfile(sbt_xml):
+        say(f"{tilde(project)}: no .idea/sbt.xml" + ("; already on BSP" if os.path.isfile(bsp_xml) else "; no sbt build linked"))
+        return True
+    builds = linked_builds(sbt_xml, project)
+    if not builds:
+        say(f"{tilde(project)}: .idea/sbt.xml links no build; leaving it")
+        return True
+    missing = [b for b in builds if not os.path.isfile(os.path.join(b, "build.sbt"))]
+    if missing:
+        say(f"{tilde(project)}: linked build has no build.sbt: {', '.join(map(tilde, missing))}")
+        return False
+    if open_in_ide(project):
+        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project)")
+        return False
+
+    settings = []
+    for b in builds:
+        rel = "$PROJECT_DIR$" + b[len(project):]
+        settings.append(BSP_PROJECT.format(rel=rel, conn=os.path.join(b, ".bsp", "sbt.json")))
+    text = BSP_XML.format(settings="\n".join(settings))
+
+    say(f"{tilde(project)}: builds {', '.join(tilde(b) for b in builds)}")
+    if dry:
+        say(f"  would run sbt-bsp-setup, write .idea/bsp.xml, move .idea/sbt.xml to sbt.xml.pre-bsp")
+        print(text)
+        return True
+    subprocess.run([SETUP, project], check=True)
+    if os.path.exists(bsp_xml):
+        os.replace(bsp_xml, bsp_xml + ".bak")
+    with open(bsp_xml, "w") as f:
+        f.write(text)
+    os.replace(sbt_xml, sbt_xml + ".pre-bsp")
+    say(f"  wrote .idea/bsp.xml; .idea/sbt.xml is now sbt.xml.pre-bsp")
+    return True
+
+
+def undo(project, dry):
+    idea = os.path.join(project, ".idea")
+    saved, sbt_xml, bsp_xml = (os.path.join(idea, n) for n in ("sbt.xml.pre-bsp", "sbt.xml", "bsp.xml"))
+    if not os.path.isfile(saved):
+        say(f"{tilde(project)}: nothing to undo (no .idea/sbt.xml.pre-bsp)")
+        return True
+    if open_in_ide(project):
+        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project)")
+        return False
+    say(f"{tilde(project)}: {'would restore' if dry else 'restoring'} .idea/sbt.xml and remove .idea/bsp.xml")
+    if not dry:
+        os.replace(saved, sbt_xml)
+        if os.path.exists(bsp_xml):
+            os.remove(bsp_xml)
+    return True
+
+
+def main(argv):
+    dry = "--dry-run" in argv or "-n" in argv
+    rollback = "--undo" in argv
+    if "-h" in argv or "--help" in argv:
+        print(__doc__.strip())
+        return 0
+    args = [a for a in argv if not a.startswith("-")]
+    if "--all" in argv:
+        with open(STATE) as f:
+            args += sorted({s["cwd"] for s in json.load(f)["sessions"]})
+    if not args:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    ok = True
+    for a in dict.fromkeys(os.path.realpath(os.path.expanduser(a)) for a in args):
+        ok &= (undo if rollback else convert)(a, dry)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

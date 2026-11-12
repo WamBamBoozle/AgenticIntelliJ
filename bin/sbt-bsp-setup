@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Point IntelliJ's BSP connection for every sbt build in a checkout at sbt-bsp (beside this script),
+# so the IDE shares the checkout's one sbt server (with its direnv environment)
+# instead of starting its own. Also hides the IDE's rewrite of the team-shared
+# .idea/sbt.xml from git (skip-worktree; undo with --no-skip-worktree).
+# Run by git-hooks/post-checkout (installed per repository) when a worktree is added.
+# Usage: sbt-bsp-setup [checkout ...]   (default: current directory)
+# IntelliJ runs .bsp/sbt.json without your shell's PATH, so the file names sbt-bsp by absolute path.
+shopt -s nullglob
+self=$(realpath "$0")
+here=$(dirname "$self")
+for top in "${@:-$PWD}"; do
+  top=$(realpath "$top") || continue
+  # The checkout's root build and any one or two levels down (e.g. repo/backend,
+  # repo/services/api), skipping build output and node_modules.
+  for build in "$top" "$top"/*/ "$top"/*/*/; do
+    [[ ${build#"$top"} =~ /(target|target-test|node_modules|project)/ ]] && continue
+    build=${build%/}
+    [[ -f $build/build.sbt && -f $build/project/build.properties ]] || continue
+    ver=$(sed -n 's/^sbt\.version *= *//p' "$build/project/build.properties" | tr -d '[:space:]')
+    mkdir -p "$build/.bsp"
+    [[ -f $build/.bsp/sbt.json && ! -f $build/.bsp/sbt.json.orig ]] && cp "$build/.bsp/sbt.json" "$build/.bsp/sbt.json.orig"
+    printf '%s\n' "{\"name\":\"sbt\",\"version\":\"$ver\",\"bspVersion\":\"2.1.0-M1\",\"languages\":[\"scala\"],\"argv\":[\"$here/sbt-bsp\",\"$build\"]}" > "$build/.bsp/sbt.json"
+    # Tells the sbt global hook (sbt/global.sbt in this repo) to put this back after an sbt server
+    # rewrites it; the marker holds this script's path so the hook knows what to run.
+    printf '%s\n' "$self" > "$build/.bsp/.use-sbt-bsp"
+    printf '%s\n' "sbt-bsp-setup: $build (sbt $ver)"
+  done
+  if git -C "$top" ls-files --error-unmatch .idea/sbt.xml >/dev/null 2>&1; then
+    git -C "$top" update-index --skip-worktree .idea/sbt.xml
+  fi
+done
+exit 0

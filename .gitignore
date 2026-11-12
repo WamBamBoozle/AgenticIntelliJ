@@ -1,0 +1,9 @@
+# Scratch and personal working files: the execution log, one-off pages, notes.
+tmp/
+# The symlink to tmp/execution-log.md, kept so older instructions that append to ./execution-log.md still work.
+/execution-log.md
+# .idea/ is shared on purpose; .idea/.gitignore (IntelliJ's own) keeps out workspace.xml and the other per-user files.
+# Python bytecode.
+__pycache__/
+# macOS.
+.DS_Store

@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# load-project — open a project in IntelliJ and start its Claude session in a
+# terminal inside that IDE window.
+#
+# The command is not typed via synthetic keystrokes; it is queued in
+# $PENDING_DIR and run by the load-project hook (shell/agentic-intellij.sh) when a fresh
+# IntelliJ shell starts in the project directory. That way a terminal tab that
+# already holds a running session is never typed into.
+
+set -euo pipefail
+
+# Your own table lives outside this repo; load-project.tsv beside this script is
+# only an example. Start yours with:
+#   mkdir -p ~/.config/load-project && cp load-project.tsv ~/.config/load-project/projects.tsv
+TABLE="${LOAD_PROJECT_TABLE:-${XDG_CONFIG_HOME:-$HOME/.config}/load-project/projects.tsv}"
+PENDING_DIR="${LOAD_PROJECT_PENDING:-$HOME/.cache/load-project/pending}"
+# A bundle *path*, not a name: `open -a <name>` resolves through LaunchServices,
+# which indexes bundles by their real on-disk name — so a symlink such as
+# ~/Applications/IntelliJ IDEA.app pinning "whichever version is current" is
+# invisible to it, and a fresh install that lands as "IntelliJ IDEA 2026.2.2.app"
+# breaks the name lookup. A path is followed through symlinks and needs no
+# renaming when the next version arrives.
+APP="${LOAD_PROJECT_APP:-$HOME/Applications/IntelliJ IDEA.app}"
+
+WINDOW_TIMEOUT=180   # seconds to wait for the IDE window to appear
+SHELL_TIMEOUT=25     # seconds to wait for a restored terminal tab to claim it
+
+die() { printf 'load-project: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+usage: load-project [-n|--dry-run] <name>
+       load-project --list
+
+Opens the project in IntelliJ and starts its Claude session in a terminal
+there. With no arguments, lists the table.
+
+Table: $TABLE
+EOF
+}
+
+# Emits "dir<TAB>args" for a name; exact match first, then case-insensitive.
+lookup() {
+  local want="$1" name dir args
+  while IFS=$'\t' read -r name dir args; do
+    [[ -z "${name// /}" || "${name:0:1}" == "#" ]] && continue
+    [[ "$name" == "$want" ]] && { printf '%s\t%s\n' "$dir" "$args"; return 0; }
+  done < "$TABLE"
+  while IFS=$'\t' read -r name dir args; do
+    [[ -z "${name// /}" || "${name:0:1}" == "#" ]] && continue
+    if [[ "$(tr '[:upper:]' '[:lower:]' <<<"$name")" == "$(tr '[:upper:]' '[:lower:]' <<<"$want")" ]]; then
+      printf '%s\t%s\n' "$dir" "$args"; return 0
+    fi
+  done < "$TABLE"
+  return 1
+}
+
+list() {
+  printf '%-22s %s\n' NAME DIRECTORY
+  local name dir args
+  while IFS=$'\t' read -r name dir args; do
+    [[ -z "${name// /}" || "${name:0:1}" == "#" ]] && continue
+    printf '%-22s %s\n' "$name" "$dir"
+  done < "$TABLE"
+}
+
+# Reports an .envrc's approval state: allowed | blocked | unknown. direnv encodes
+# `allowed` as 0 in `direnv status --json`; anything we cannot parse is unknown,
+# so a direnv too old for --json never produces a false alarm.
+direnv_state() {
+  command -v direnv >/dev/null 2>&1 || { printf 'unknown'; return; }
+  (cd "$1" && direnv status --json 2>/dev/null) | python3 -c '
+import json, sys
+try:
+    rc = (json.load(sys.stdin).get("state") or {}).get("foundRC") or {}
+except Exception:
+    print("unknown"); sys.exit()
+print("allowed" if rc.get("allowed") == 0 else "blocked")
+' 2>/dev/null || printf 'unknown'
+}
+
+# Key a queued command by its directory, so the shell hook can find it by $PWD.
+pending_key() { printf '%s' "$1" | shasum | cut -d' ' -f1; }
+
+# Window titles look like "<project name> – <file>", sometimes with a
+# "[<module>]" or "[<~-form path>]" after the name. The path appears only when
+# IntelliJ needs it to tell projects apart, so match a window either by the
+# bracketed path or by its title starting with the project's name: .idea/.name
+# when the project was renamed, the directory's name otherwise.
+# Arguments: <~-form path> <project name>.
+ide_window_exists() {
+  osascript - "$1" "$2" <<'OSA' 2>/dev/null | grep -q yes
+on run argv
+  set marker to "[" & (item 1 of argv) & "]"
+  set pname to item 2 of argv
+  tell application "System Events"
+    if not (exists process "idea") then return "no"
+    tell process "idea"
+      set titles to name of windows
+      repeat with i from 1 to count of titles
+        set t to item i of titles
+        if t contains marker or t is pname or t starts with (pname & " ") then return "yes"
+      end repeat
+    end tell
+  end tell
+  return "no"
+end run
+OSA
+}
+
+# Raise the project's window and toggle the Terminal tool window (alt-F12).
+# Arguments as for ide_window_exists; a bracketed-path match wins over a name match.
+open_ide_terminal() {
+  osascript - "$1" "$2" <<'OSA' >/dev/null 2>&1
+on run argv
+  set marker to "[" & (item 1 of argv) & "]"
+  set pname to item 2 of argv
+  tell application "System Events"
+    tell process "idea"
+      set w to missing value
+      repeat with i from 1 to count of windows
+        set x to window i
+        set t to name of x
+        if t contains marker then
+          set w to x
+          exit repeat
+        end if
+        if w is missing value and (t is pname or t starts with (pname & " ")) then set w to x
+      end repeat
+      if w is missing value then return
+      perform action "AXRaise" of w
+      set frontmost to true
+    end tell
+    delay 0.5
+    key code 111 using {option down}
+  end tell
+end run
+OSA
+}
+
+dry_run=false
+case "${1:-}" in
+  ''|--list)     [[ -f "$TABLE" ]] || die "no table at $TABLE (start from load-project.tsv beside this script, or set LOAD_PROJECT_TABLE)"; list; exit 0 ;;
+  -h|--help)     usage; exit 0 ;;
+  -n|--dry-run)  dry_run=true; shift ;;
+esac
+
+[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+[[ -f "$TABLE" ]] || die "no table at $TABLE (start from load-project.tsv beside this script, or set LOAD_PROJECT_TABLE)"
+
+# Fail before queueing: a command left in $PENDING_DIR with no IDE to open would
+# fire at the next unrelated shell in that directory.
+if [[ "$APP" == */* ]]; then
+  [[ -d "$APP" && -x "$APP/Contents/MacOS" ]] || die "no application bundle at $APP
+  Point LOAD_PROJECT_APP at the IDE bundle, or fix the symlink:
+    ln -sfn \"\$HOME/Applications/IntelliJ IDEA <version>.app\" \"\$HOME/Applications/IntelliJ IDEA.app\""
+fi
+
+row=$(lookup "$1") || die "unknown project '$1'. Known: $(list | tail -n +2 | awk '{print $1}' | paste -sd' ' -)"
+IFS=$'\t' read -r dir args <<<"$row"
+dir="${dir/#\~/$HOME}"
+[[ -d "$dir" ]] || die "directory does not exist: $dir"
+dir="$(cd "$dir" && pwd -P)"
+base="$(basename "$dir")"
+# ~-form path is what IntelliJ shows in window titles.
+tildepath="~${dir#$HOME}"
+# The name IntelliJ puts first in the window title.
+pname="$base"
+[[ -s "$dir/.idea/.name" ]] && pname="$(head -n 1 "$dir/.idea/.name")"
+cmd="claude $args"
+
+# What gets queued, as opposed to what is reported. The load-project hook eval's this
+# while the shell rc file is still sourcing, which is before direnv's precmd hook has ever
+# fired — so a session started there inherits none of the project's .envrc: no
+# project's secrets, the system TMPDIR instead of the worktree's, and every MCP
+# server spawned without its tokens. Load direnv explicitly, in the shell, so
+# claude inherits it as an ordinary child.
+payload="$cmd"
+envrc_note=""
+if [[ -f "$dir/.envrc" ]]; then
+  payload='if command -v direnv >/dev/null 2>&1; then eval "$(direnv export ${ZSH_VERSION:+zsh}${BASH_VERSION:+bash})"; fi; '"$cmd"
+  # An unapproved .envrc stays unapproved: approving one is the operator's call,
+  # not a side effect of opening a project. Say so here, where they are looking,
+  # rather than in a window that is about to take the focus. `direnv export`
+  # sets DIRENV_DIR either way, so the new shell cannot detect this for itself.
+  if [[ "$(direnv_state "$dir")" == blocked ]]; then
+    envrc_note="load-project: $dir/.envrc is not approved, so the session starts without the project environment.
+  Approve it and restart: direnv allow $dir"
+  fi
+fi
+
+if $dry_run; then
+  printf 'directory: %s\ncommand:   %s\nqueued:    %s\n' "$dir" "$cmd" "$payload"
+  [[ -n "$envrc_note" ]] && printf '%s\n' "$envrc_note"
+  exit 0
+fi
+
+mkdir -p "$PENDING_DIR"
+printf '%s\n' "$payload" > "$PENDING_DIR/$(pending_key "$dir")"
+printf 'load-project: queued for %s\n  %s\n' "$dir" "$cmd"
+[[ -n "$envrc_note" ]] && printf '%s\n' "$envrc_note" >&2
+
+# intellij hands $dir to a running IDE, or, when none is running, cleans up after
+# the last session and starts one with its output logged to ~/logs/idea.log.
+# It resolves the bundle the same way as $APP above, LOAD_PROJECT_APP included.
+"$(dirname "$(realpath "$0")")/intellij" "$dir"
+
+printf 'load-project: waiting for the IntelliJ window'
+for ((i = 0; i < WINDOW_TIMEOUT; i++)); do
+  ide_window_exists "$tildepath" "$pname" && break
+  printf '.'; sleep 1
+done
+printf '\n'
+
+if ! ide_window_exists "$tildepath" "$pname"; then
+  printf 'load-project: window did not appear within %ss.\n' "$WINDOW_TIMEOUT" >&2
+  printf '  Open a terminal there yourself (alt-F12) and the session will start.\n' >&2
+  exit 1
+fi
+
+# A restored terminal tab may already have claimed the command; only reach for
+# the keystroke if nothing has.
+pend="$PENDING_DIR/$(pending_key "$dir")"
+for ((i = 0; i < SHELL_TIMEOUT; i++)); do
+  [[ -f "$pend" ]] || break
+  sleep 1
+done
+
+if [[ -f "$pend" ]]; then
+  open_ide_terminal "$tildepath" "$pname"
+  for ((i = 0; i < 15; i++)); do
+    [[ -f "$pend" ]] || break
+    sleep 1
+  done
+fi
+
+if [[ -f "$pend" ]]; then
+  printf 'load-project: no terminal picked it up. Press alt-F12 in that window.\n' >&2
+  printf '  (Still queued — it runs as soon as a shell opens there.)\n' >&2
+else
+  printf 'load-project: session started in %s.\n' "$base"
+  [[ -n "$envrc_note" ]] && printf '%s\n' "$envrc_note" >&2
+fi

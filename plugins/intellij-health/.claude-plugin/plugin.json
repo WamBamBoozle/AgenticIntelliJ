@@ -1,0 +1,13 @@
+{
+  "name": "intellij-health",
+  "version": "0.1.0",
+  "description": "Health check for IntelliJ IDEA running alongside many Claude Code sessions: reads the IDE's logs (errors, plugin blame, BSP/sbt trouble, freezes, indexing, MCP traffic) and the machine's memory (IDE heap, sbt servers per checkout, Kotlin daemons, duplicated MCP servers, swap), then reports what is wrong and what to do about it.",
+  "author": {
+    "name": "Tom Howland",
+    "url": "https://github.com/WamBamBoozle"
+  },
+  "homepage": "https://github.com/WamBamBoozle/AgenticIntelliJ",
+  "repository": "https://github.com/WamBamBoozle/AgenticIntelliJ",
+  "license": "MIT",
+  "keywords": ["intellij", "jetbrains", "idea.log", "memory", "sbt", "bsp", "diagnostics"]
+}

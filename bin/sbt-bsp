@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# IntelliJ's BSP entry point for an sbt build: .bsp/sbt.json runs this instead of
+# java directly. The BSP client joins the checkout's running sbt server (the one
+# `sbt --client` uses) or starts it; a server it starts inherits this process's
+# environment, so load the project's direnv first. Otherwise a server started by
+# IntelliJ would lack the .envrc (secrets, per-checkout TMPDIR, nix's sbt and JDK),
+# and every `sbt --client` test run sharing it would too.
+# direnv writes only to stderr, so BSP's JSON-RPC on stdout stays clean.
+cd "${1:?usage: sbt-bsp <build dir>}" || exit 1
+exec direnv exec . sbt -bsp

@@ -1,0 +1,17 @@
+# Example load-project table. Copy it to ~/.config/load-project/projects.tsv
+# (or point LOAD_PROJECT_TABLE at your copy) and replace these rows with your own.
+#
+# Tab-separated: name <TAB> directory <TAB> claude arguments
+#
+# "name" is what you pass to `load-project`. "directory" is the project root
+# IntelliJ opens and the shell starts in (~ is expanded; relative --add-dir
+# paths resolve against it). "arguments" is everything after `claude`.
+#
+# Columns must be separated by TABs, not spaces. Blank lines and # are ignored.
+
+# A project whose session can also read a sibling repo; resumes the session named "api".
+api	~/src/api	--add-dir ~/src/shared-lib -n api --resume api
+# A front end that works alongside the api checkout.
+web	~/src/web	--add-dir ~/src/api -n web --resume web
+# A plain project: just name the session and resume it.
+notes	~/src/notes	-n notes --resume notes

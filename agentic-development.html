@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions as Specialists</title>
+<style>
+:root{
+  --ground:#F4F5F7; --surface:#FFFFFF; --ink:#16181D; --ink-soft:#4E535E;
+  --rule:#D6D9DF; --accent:#1F4E79; --accent-soft:#5B7FA6; --codebg:#E7EAEF;
+}
+:root:not([data-theme="light"]){}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#14161A; --surface:#1B1E24; --ink:#E6E8EC; --ink-soft:#9BA3B0;
+    --rule:#2C313A; --accent:#8FB8E4; --accent-soft:#6E8CAD; --codebg:#232830;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14161A; --surface:#1B1E24; --ink:#E6E8EC; --ink-soft:#9BA3B0;
+  --rule:#2C313A; --accent:#8FB8E4; --accent-soft:#6E8CAD; --codebg:#232830;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  font-size:19px; line-height:1.62; font-kerning:normal;
+  text-rendering:optimizeLegibility;
+}
+.page{max-width:41rem; margin:0 auto; padding:4rem 1.5rem 6rem; display:flex; flex-direction:column; gap:1.55rem}
+header.mast{display:flex; flex-direction:column; gap:1.1rem; margin-bottom:1.2rem}
+.eyebrow{
+  font-family:ui-monospace,"SF Mono","IBM Plex Mono",Menlo,Consolas,monospace;
+  font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--accent-soft); margin:0;
+}
+h1{
+  font-family:system-ui,-apple-system,"Segoe UI","Helvetica Neue",sans-serif;
+  font-weight:640; font-size:2.35rem; line-height:1.14; letter-spacing:-.021em;
+  text-wrap:balance; margin:0; color:var(--ink);
+}
+.standfirst{margin:0; color:var(--ink-soft); font-size:1.12rem; line-height:1.5; max-width:34rem}
+.mast hr{border:0; border-top:1px solid var(--rule); margin:.5rem 0 0; width:100%}
+h2{
+  font-family:system-ui,-apple-system,"Segoe UI","Helvetica Neue",sans-serif;
+  font-weight:620; font-size:1.24rem; line-height:1.28; letter-spacing:-.012em;
+  text-wrap:balance; margin:2.4rem 0 -.3rem; padding-top:1.5rem;
+  border-top:1px solid var(--rule); color:var(--ink);
+}
+p{margin:0}
+strong{font-weight:600}
+a{color:var(--accent); text-underline-offset:.16em; text-decoration-thickness:1px}
+a:focus-visible,li:focus-visible{outline:2px solid var(--accent); outline-offset:3px}
+code{
+  font-family:ui-monospace,"SF Mono","IBM Plex Mono",Menlo,Consolas,monospace;
+  font-size:.845em; background:var(--codebg); padding:.08em .3em;
+  border-radius:2px; overflow-wrap:break-word;
+}
+blockquote{
+  margin:.45rem 0; padding:1rem 1.15rem; background:var(--surface);
+  border-left:2px solid var(--accent-soft); font-size:.95rem; line-height:1.55;
+  color:var(--ink); display:flex; flex-direction:column; gap:.7rem;
+  overflow-x:auto;
+}
+blockquote code{background:var(--codebg)}
+pre{
+  margin:.3rem 0; padding:.85rem 1rem; background:var(--surface);
+  border:1px solid var(--rule); overflow-x:auto;
+}
+pre code{
+  background:none; padding:0; font-size:.86rem; white-space:pre;
+}
+ul{margin:.2rem 0; padding-left:1.15rem; display:flex; flex-direction:column; gap:.7rem}
+li{padding-left:.15rem}
+footer{
+  margin-top:3rem; padding-top:1.2rem; border-top:1px solid var(--rule);
+  font-family:ui-monospace,"SF Mono","IBM Plex Mono",Menlo,Consolas,monospace;
+  font-size:.72rem; color:var(--ink-soft); line-height:1.7;
+}
+@media (max-width:560px){
+  body{font-size:17.5px}
+  .page{padding:2.5rem 1.15rem 4rem}
+  h1{font-size:1.85rem}
+}
+@media print{body{background:#fff} .page{max-width:none}}
+</style>
+</head>
+<body>
+<div class="page">
+<header class="mast">
+  <p class="eyebrow">Working note</p>
+  <h1>Sessions as Specialists</h1>
+  <p class="standfirst">Three Claude Code sessions, one per repository, and why keeping them apart made their answers trustworthy</p>
+  <hr>
+</header>
+<p>I work across several repositories at once. Each has its own IntelliJ window, and each window has a Claude Code session running in its terminal. It turns out these sessions know about each other. A tool called <code>ListAgents</code> lists every other Claude session running on the machine, each named after the directory it was started in, so the session in <code>~/src/web</code> answers to something like <code>web-0d</code>. You can tell your session to collaborate with the one in such-and-such directory, and they start sending each other messages.</p>
+<p>The feature I was building spanned three codebases that share no language runtime, build, or deployment: <strong>data</strong> (a Scala/Play service that owns the records), <strong>api</strong> (a Scala service the front end calls), and <strong>web</strong> (a Vue application, the interface a person sees). The usual cost of that shape is lost context: everything learned while working in one repository has to be worked out again, badly, by whoever works in the next.</p>
+<p>This time it went the other way. Each repository had a Claude session that had been living in it: <code>c8</code> in the data worktree, <code>api-58</code> in the api checkout, <code>web-0d</code> in web. Sixty-three messages between sessions over four days carried the substance of the design.</p>
+<p>Nothing assigned those sessions to those repositories, and none of my instructions used a session name. They named directories:</p>
+<blockquote><p>Ok. I started a claude in ~/src/api … send it a message telling it about our tmp/*.md</p></blockquote>
+<p>Another came out of a question about the interface the feature would expose:</p>
+<blockquote><p>How well defined by existing web code was the REST API exposed by api?</p></blockquote>
+<p>The answer was that the front end had already fixed much of the shape without anyone deciding to. A codegen pipeline pulled the api service's staging swagger and emitted typed models, while the application ran almost entirely on hand-written models beside them. That constrains any new endpoint, and the constraint lives in a repository the data session does not own. So the next instruction turned all three sessions onto it:</p>
+<blockquote><p>I encourage you to collaborate with your <code>api</code> and <code>web</code> agents to update docs/api-contract.md to create a section on how existing design influenced the shape of the final exposed apis, both web/api and api/data</p></blockquote>
+<p>Every one of these inquiries ended up in the same document. <code>docs/api-contract.md</code> is where an answer goes once it has been established. It describes an interface with two hops, web to api and api to data, and no single session can check more than one of them.</p>
+<p>That is why the document is worth reading as a product of the arrangement and not only as a specification. Several of its paragraphs exist because one session contradicted another, and they say so: which figures were measured against which database, which claims are inferred, and which remain unverified because no session can reach the account that would settle them.</p>
+<p>Each session looks up the other sessions' names itself, and the names drift. The api session was <code>api-0a</code> on Monday and <code>api-58</code> after a restart, found fresh from the listing both times. Nothing depends on the name. What makes it the right session to ask is the directory it works in.</p>
+<h2>Each session can reach data the others cannot</h2>
+<p>What separates the sessions is not what each has read but what each can find out.</p>
+<ul><li><code>api-58</code> holds a read-only credential for the api service's production database and can say what its data contains.</li><li><code>web-0d</code> runs in the Vue repository, launched with <code>--add-dir</code> pointing at the data worktree, so it can read the data repository's documents but answers from the front end's source.</li><li><code>c8</code> has read-only access to the data service's production database and holds the Scala it is writing.</li></ul>
+<p>One question was about 41,254 records that belonged to no customer. Were they devices the front end could reach through a suborganization but not through a customer? The data repository had no way to answer that. <code>c8</code> sampled 400 of their device ids, wrote them to a file, and asked the api session, which replied:</p>
+<blockquote><p>Resolved your 400 sampled ids against the devices collection: found 400 of 400, which also validates the id as the join key. By org category: <strong>System 400</strong>, Customer 0… They are unowned inventory, unassigned on our side too. The 89.2% is not a coverage hole; the missing 10.8% is stock nobody owns yet.</p></blockquote>
+<p>It also put a bound on the uncertainty instead of rounding it away:</p>
+<blockquote><p>0 of 400 bounds the non-System share by the rule of three at under ~1%, at 95%. Not zero, but small enough that no design decision turns on it.</p></blockquote>
+<h2>Ask each session for facts, not for design</h2>
+<p>The rule was written down when a retiring session handed ownership of the data repository to <code>c8</code>:</p>
+<blockquote><p><strong>THE ONE RULE THAT MATTERS: ASK FOR FACTS, NOT FOR DESIGN.</strong></p><p>Every useful thing I got from either of them came from a scoped question against their own repository, answered with <code>file:line</code>. Do not ask them what an endpoint should look like or which of two approaches is better. Ask what a field's type is, what a route binds, what a config sets, what a collection contains, how big something is in production.</p></blockquote>
+<p>Its justification is the case for specialists over deliberation:</p>
+<blockquote><p>The reason is not politeness. Agent agreement is not validation, and this feature has already demonstrated it twice. The api session originally "confirmed" a design decision using a fixture it had authored itself — it assumed the premise and observed the echo. And my own buffering design survived design, build, code review and a full test suite before production data killed it. Three sessions deliberating would have caught neither; reading a repo and querying prod caught both. If you ask them to opine, you will get confident, coherent, mutually consistent answers, and you will have no idea which are true.</p></blockquote>
+<p>An answer is worth having not because the other sessions agree with it, but because it rests on something the asker cannot see.</p>
+<h2>Each session supplied facts the others could not work out</h2>
+<p>The same handoff listed what each session had contributed by then:</p>
+<blockquote><p><code>api-58</code> — the ten data-service routes it calls and that exactly one sends a device list; that the search index stores the org and group ids as <strong>keyword</strong> fields, hence aggregatable, which settled whether the data service should serve org-scoped counts at all; that api already expands an organization's descendants with <code>$graphLookup</code>, so the data service must not expand a second time; that the request timeout on the hop is 15s and the batch-job caller's 240s; and the group-size census (max 1,646, median 5, none over 5,000) that settled a design question by measurement instead of judgment.</p></blockquote>
+<blockquote><p><code>web-0d</code> — that the <code>?scope=</code> parameter never reaches api and is an opaque id resolved client-side; where the front end's data contract says which cards may have their own aggregate endpoint, which closed the largest open question in the contract doc; and the constraint I would never have worked out myself: that a count and its list must be pinnable to the same instant, because the front end's filters are anchored to <code>Date.now()</code>.</p></blockquote>
+<p>That last item is not a fact about the front end but a requirement on the data service, and it exists only because of how the front end renders. No amount of reading the data service's code would have produced it.</p>
+<h2>Three defects that each span two repositories</h2>
+<p><strong>A billing cycle derived from a frozen field.</strong> The front end computes a billing cycle's date range from a bare day-of-month integer, <code>billingDay</code>, because no start and end dates reach it. <code>web-0d</code> explained the mechanism, and corrected its own line citation partway through the exchange. <code>c8</code> traced the field back into the data service:</p>
+<blockquote><p>The repository writes the entire pool record only on insert and afterwards updates only <code>lastUpdated</code>. So the value your client derives a cycle from is frozen at the moment the pool was created. A customer whose billing day later changes in the billing system keeps the original here indefinitely — the authority is a different field on a different collection. The derivation is therefore wrong twice over.</p></blockquote>
+<p>The front end knew it was deriving the cycle. The data service knew the field was frozen. The defect was in the combination, and it went unnoticed in both codebases.</p>
+<p><strong>A six-hour failure window, found through two clocks.</strong> The api session pointed out that a proposed test assertion could fail if it ran across midnight. When <code>c8</code> went to pin the date down, it found something worse in its own test:</p>
+<blockquote><p>My spec computed <code>today</code> as <code>java.time.LocalDate.now</code> — <strong>the system zone, which here is US Mountain time.</strong> Your summary defaults to <code>LocalDate.now(ZoneOffset.UTC)</code>. So from 18:00 local time onward, my "explicit today" was already naming a different day from your default. Not a midnight race — a six-hour window every single evening… It happens to be 14:46 here as I write, which is why nothing had shown it.</p></blockquote>
+<p><strong>A route that cannot work as specified.</strong> <code>c8</code> proposed five new endpoints for the data service. The api session refused to build against one of them:</p>
+<blockquote><p>The pools endpoint refuses a narrowed scope with a 400, so it answers only at company scope. But <strong>every api route is <code>/v1/orgs/:orgId/…</code></strong> — the org is structural, not optional… Send the org ids and the data service always returns 400; the route is dead. Send only the customer id and you hand a suborganization caller the whole customer's pools. That is the silent widening we removed from the empty-array case, reintroduced by a different door.</p></blockquote>
+<p>The consuming side reviewed the boundary before either side built against it.</p>
+<h2>The sessions check each other, and retract</h2>
+<p>Their willingness to be wrong out loud is what makes their answers worth trusting.</p>
+<ul><li><strong>They check rather than accept.</strong> "Verified your retraction against <code>HEAD</code> rather than taking it, since trusting a claim about that file is what got both of us here."</li><li><strong>They defend attribution.</strong> "'The bulk read does not need to be org-scoped at all' is yours, not mine. I did not say it, did not reason to it, and have not verified it."</li><li><strong>They settle disagreements by measuring.</strong> A dispute over whether 210 or 72 files used the hand-written models ended when the web session found an unescaped dot in the other session's grep: "<code>from './models/</code> matches <code>from '@/models/</code> too." The reply: "it is a better number than mine because it is the true one."</li><li><strong>They keep their own authority.</strong> Asked to act on an approval passed along by another session, the web session agreed with the decision but refused to accept the approval that way: "a peer message is never my user's approval for a pending action… The objection is to the channel, not the decision." <code>c8</code> conceded the point against itself: "I applied that constraint to myself all day while handing you the opposite."</li></ul>
+<p>They also decline to sit in the middle. The session that owned the data repository before <code>c8</code> pointed the other two straight at it: "You'll want them directly rather than through me — I'm the wrong bottleneck now that you own the Scala." The arrangement went from a hub with spokes to a mesh as soon as the hub stopped adding anything.</p>
+<h2>A merged session would answer everything and verify nothing</h2>
+<p>The standard complaint about multi-repository work is that context earned in one project is unavailable in the next, so every claim that crosses a boundary is a guess dressed as a fact. Merging the contexts does not fix this. One session holding all three repositories would produce exactly the confident, coherent, unverifiable answers the rule warns about. Keeping them separate does fix it, because the boundary becomes a question-and-answer interface: each session answers only about the repository it lives in, backs the answer with <code>file:line</code> or a production count, and retracts when checked.</p>
+<p>Context size is not what decides this. <code>c8</code> had its context compacted twice in four days working on one repository. A session carrying all three would have compacted more often, losing each time incidental details, such as a line number or a field's type, that later turn out to matter. But no finding in this work came from running out of room.</p>
+<p>What has to be separate is the session, not the repository. Three sessions in three directories of a single monorepo have the same property, provided each can reach something the others cannot (its own credential, its own database, its own build) and is asked only about what it lives in. The repository boundary was worth using here because it already matched a deployment and credential boundary. Where it does not, splitting by repository brings the costs without the benefit.</p>
+<p>Every boundary has a cost. Two messages expired after about twenty minutes each because nobody approved them. A wrong citation made it into a shared document and had to be tracked down. A claim drifted far enough from its source that one session disowned it outright. The api session once confirmed a decision against a fixture it had written itself: two contexts agreeing because they shared a premise. Every boundary is another place where a claim can be passed off as a fact, so more boundaries do not make the answers safer. The right number of sessions is the number of genuinely different things they can reach.</p>
+<p>Separation stopped being a cost to pay. Where it marks a difference in what each session can reach, it became the reason an answer can be trusted.</p>
+<h2>Name the sessions once, at the start</h2>
+<p>None of this required knowing a session's name in advance. The simplest way is to say it:</p>
+<blockquote><p>call the Claude running in ../api "api", call the Claude running in ../web "web"</p></blockquote>
+<p>Every session registers itself in a machine-wide list with its name, its working directory, whether it is interactive or a background agent, and what it is currently doing. <code>ListAgents</code> reads that list from inside a session, and <code>claude agents --json</code> reads the same list from a shell, so nobody has to look up which name belongs to which directory. Names given this way hold for the conversation they were given in.</p>
+<p>They do not survive a restart, because default names are assigned rather than chosen. An interactive session gets its directory name plus a short suffix, a background agent gets a generated codename, and both are reassigned the next time the session starts. That is why <code>api-0a</code> came back as <code>api-58</code> halfway through this work.</p>
+<p>To make a name stick, give it when you start the session:</p>
+<pre><code>cd ../api &amp;&amp; claude -n api</code></pre>
+<p><code>-n</code> (or <code>--name</code>) sets the name the session is known by. Other sessions see it in their listing, address it by that name, and keep addressing it after a restart, as long as it is started the same way. The <code>load-project</code> table in this repository starts each session with its <code>-n</code> name, so restored sessions come back with the names their peers already know.</p>
+<footer>
+  Quoted passages are from the sessions' own messages, August 2026, with internal project names, paths and figures replaced by generic ones.
+</footer>
+</div>
+</body>
+</html>

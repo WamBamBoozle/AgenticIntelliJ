@@ -1,0 +1,179 @@
+#!/bin/zsh
+# Launch IntelliJ IDEA, first cleaning up what earlier sessions left behind.
+# This owns the IDE process (cleanup, log capture, launch); load-project owns
+# opening a project in it and starting that project's Claude session.
+#
+# Usage: intellij [--dry-run] [--clean-only] [path ...]
+#   --dry-run     show what would be cleaned and launched; change nothing
+#   --clean-only  clean up, but don't launch the IDE
+#   path ...      open these instead of the default project
+#
+# Cleanup only runs when IntelliJ isn't running: everything it removes is either
+# owned by a live IDE or harmless to lose once the IDE is gone. If the IDE is
+# already up, the paths are handed to it and nothing else is touched.
+
+setopt null_glob extended_glob
+
+DRY=0 LAUNCH=1
+while (( $# )); do
+    case $1 in
+        -n|--dry-run)  DRY=1 ;;
+        --clean-only)  LAUNCH=0 ;;
+        -h|--help)     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --)            shift; break ;;
+        -*)            print -u2 "intellij: unknown option $1"; exit 2 ;;
+        *)             break ;;
+    esac
+    shift
+done
+
+# The same bundle load-project opens: the ~/Applications/IntelliJ IDEA.app
+# symlink that pins the current version (LOAD_PROJECT_APP overrides both).
+# If the symlink is missing or stale, fall back to the newest versioned bundle.
+APP=${LOAD_PROJECT_APP:-$HOME/Applications/IntelliJ IDEA.app}
+if [[ ! -x $APP/Contents/MacOS/idea ]]; then
+    apps=( "$HOME"/Applications/IntelliJ\ IDEA\ *.app(N/nOn) )
+    APP=$apps[1]
+fi
+X="$APP/Contents/MacOS/idea"
+[[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found under ~/Applications"; exit 1 }
+
+# With no paths given, open this repository itself.
+PROJECT=${0:A:h:h}
+LOGS="$HOME/logs"
+L="$LOGS/idea.log"
+B="$LOGS/idea_backup.log"
+JB_SUPPORT="$HOME/Library/Application Support/JetBrains"
+JB_LOGS="$HOME/Library/Logs/JetBrains"
+KOTLIN_DAEMON_DIR="$HOME/Library/Application Support/kotlin/daemon"
+
+say() { print -r -- "intellij: $*" }
+
+# PIDs whose full command line matches an extended regex, skipping this script
+# and the ps/awk doing the looking (their own command lines contain the pattern).
+pids_matching() {
+    ps -axo pid=,command= | awk -v re="$1" -v skip="$2" -v self=$$ '
+        $1 == self { next }
+        { cmd = $0; sub(/^ *[0-9]+ /, "", cmd) }
+        cmd ~ /^(ps|awk) / { next }
+        skip != "" && cmd ~ skip { next }
+        cmd ~ re { print $1 }'
+}
+
+# Matched by awk, not pgrep: macOS pgrep's regex dialect rejects the group.
+ide_running() {
+    [[ -n $(pids_matching '/IntelliJ IDEA[^/]*\.app/Contents/MacOS/idea( |$)') ]]
+}
+
+# SIGTERM, wait up to 5s, then SIGKILL whatever is still alive.
+stop_pids() {
+    local label=$1; shift
+    (( $# )) || return 0
+    say "$label: stopping $# process(es): $*"
+    (( DRY )) && return 0
+    kill "$@" 2>/dev/null
+    local alive i
+    for i in {1..10}; do
+        alive=( $(ps -o pid= -p ${(j:,:)@} 2>/dev/null) )
+        (( $#alive )) || return 0
+        sleep 0.5
+    done
+    say "$label: forcing $#alive process(es): $alive"
+    kill -9 $alive 2>/dev/null
+}
+
+remove() {
+    local label=$1; shift
+    (( $# )) || return 0
+    say "$label: removing $# item(s)"
+    if (( DRY )); then
+        print -rl -- "  "${^@[1,5]}
+        (( $# > 5 )) && print -r -- "  … and $(( $# - 5 )) more"
+        return 0
+    fi
+    rm -rf -- "$@"
+}
+
+cleanup() {
+    # Never reached with a live IDE outside a dry run; checked again here
+    # because step 1 would otherwise stop the IDE itself.
+    if (( ! DRY )) && ide_running; then
+        say "IntelliJ is running; refusing to clean up"
+        return 1
+    fi
+
+    # 1. Helpers an earlier IDE spawned and never stopped: embedded-browser
+    #    (JCEF) renderers, Junie agents, the semantic-search server, IntelliJ's
+    #    sbt shells and Scala compile server, JPS builds, the file watcher.
+    #    They run from the app bundle or from IntelliJ's own config/cache dirs.
+    #    The shared JetBrains daemon and Toolbox are left alone.
+    stop_pids "leftover IntelliJ helpers" $(pids_matching \
+        '(/IntelliJ IDEA[^/]*\.app/Contents/|/Library/Caches/JetBrains/IntelliJIdea|/Library/Application Support/JetBrains/IntelliJIdea)' \
+        '(JetBrains Toolbox|/JetBrains/Daemon/)')
+
+    # 2. The Kotlin compile daemon, then its client marker files. Each IDE
+    #    session leaves "client is running" markers behind, and while any exist
+    #    the daemon never reaches its 2-hour idle shutdown. It restarts on demand.
+    stop_pids "Kotlin compile daemon" $(pids_matching 'KotlinCompileDaemon')
+    remove "stale Kotlin daemon markers" \
+        "$KOTLIN_DAEMON_DIR"/kotlin-compiler-client-*-is-running(N) \
+        "$KOTLIN_DAEMON_DIR"/kotlin-daemon.*.run(N)
+
+    # 3. Claude Code sessions stranded by a closed IntelliJ terminal: no
+    #    controlling terminal left, and started under IntelliJ's terminal.
+    local p orphans=()
+    for p in $(pgrep -x claude); do
+        [[ $(ps -o tty= -p $p | tr -d ' ') == '??' ]] || continue
+        ps eww -o command= -p $p 2>/dev/null | grep -q 'TERMINAL_EMULATOR=JetBrains-JediTerm' && orphans+=$p
+    done
+    stop_pids "Claude sessions with no terminal" $orphans
+
+    # 4. Settings Sync cache: reset to work around the SettingsSyncBridge loop
+    #    (JetBrains bug; the cloud copy is unaffected). Skipped when offline,
+    #    since the IDE needs the network to rebuild it.
+    if nc -z -w 3 jetbrains.com 443 &>/dev/null; then
+        remove "Settings Sync cache" "$JB_SUPPORT"/IntelliJIdea*/settingsSync(N/)
+    else
+        say "offline: keeping the Settings Sync cache"
+    fi
+
+    # 5. Old diagnostics: thread and freeze dumps after two weeks, JVM crash
+    #    reports after a month, heap dumps (hundreds of MB each) after a week.
+    remove "thread/freeze dumps older than 14 days" "$JB_LOGS"/IntelliJIdea*/threadDumps-*(N/m+14)
+    remove "empty JCEF logs older than 14 days" "$JB_LOGS"/IntelliJIdea*/jcef_chromium_*.log(N.L0m+14)
+    remove "JVM crash reports older than 30 days" "$HOME"/java_error_in_idea*.log(N.m+30)
+    remove "heap dumps older than 7 days" "$HOME"/java_error_in_idea*.hprof(N.m+7) \
+        "$HOME"/IU-*.hprof(N.m+7) "$LOGS"/IU-*.hprof(N.m+7)
+}
+
+if ide_running; then
+    say "IntelliJ is already running; leaving its processes and logs alone"
+    if (( DRY )); then
+        say "dry run: this is what a cleanup would target once it exits"
+        cleanup
+        exit 0
+    fi
+    (( LAUNCH )) && nohup "$X" "${@:-$PROJECT}" </dev/null >/dev/null 2>&1 &!
+    exit 0
+fi
+
+cleanup
+
+(( LAUNCH )) || exit 0
+if (( DRY )); then
+    say "would launch $APP with: ${@:-$PROJECT}"
+    exit 0
+fi
+
+mkdir -p "$LOGS"
+if [[ -e $L ]]; then
+    # Keep the last session's output for review, minus the SettingsSyncBridge
+    # heartbeat (99% of WARN volume). It can't be silenced at the IDE: this build
+    # has no shipped log.xml and log-categories.xml only takes DEBUG/TRACE.
+    grep -v 'SettingsSyncBridge - Pending events is empty' "$L" > "$B"
+    rm -f "$L"
+    nohup "$X" "${@:-$PROJECT}" "$B" </dev/null >"$L" 2>&1 &!
+else
+    nohup "$X" "${@:-$PROJECT}" </dev/null >"$L" 2>&1 &!
+fi
+say "launched $APP:t"

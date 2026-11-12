@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "agentic-intellij",
+  "description": "Tools for running many Claude Code sessions in IntelliJ IDEA",
+  "owner": {
+    "name": "Tom Howland",
+    "url": "https://github.com/WamBamBoozle"
+  },
+  "plugins": [
+    {
+      "name": "intellij-health",
+      "description": "Health check for IntelliJ IDEA and its machine: IDE log review and memory use, with what to do about each problem found.",
+      "version": "0.1.0",
+      "source": "./plugins/intellij-health",
+      "category": "development"
+    }
+  ]
+}
