@@ -15,8 +15,16 @@ closes a project. Close its window (File > Close Project), or quit IntelliJ with
 For each sbt build linked in .idea/sbt.xml, it runs sbt-bsp-setup (so
 .bsp/sbt.json runs sbt-bsp, and the team's .idea/sbt.xml is hidden from
 git), writes .idea/bsp.xml pointing at that connection file, and moves
-.idea/sbt.xml aside to .idea/sbt.xml.pre-bsp. IntelliJ loads the build over BSP
-the next time it opens the project. --undo moves sbt.xml back and removes bsp.xml.
+.idea/sbt.xml aside to .idea/sbt.xml.pre-bsp. It also drops the modules the
+sbt import created from .idea/modules.xml (saved first as modules.xml.pre-bsp):
+left in place, they keep claiming the source folders, and the Scala plugin
+reports "Code insight is unavailable because the sbt project is not loaded".
+The .iml files stay on disk. IntelliJ loads the build over BSP the next time it
+opens the project.
+
+Run it again on a project that is already on BSP to drop sbt modules left over
+from an earlier switch. --undo moves sbt.xml and modules.xml back and removes
+bsp.xml.
 """
 import json, os, re, subprocess, sys
 from xml.etree import ElementTree as ET
@@ -103,11 +111,70 @@ def linked_builds(sbt_xml, project):
     return [os.path.normpath(p.replace("$PROJECT_DIR$", project)) for p in paths]
 
 
+MODULE_RE = re.compile(r'^[ \t]*<module\b[^>]*\bfilepath="([^"]*)"[^>]*/>[ \t]*\n?', re.M)
+
+
+def sbt_modules(project):
+    """(modules.xml text, its <module/> lines that point at .iml files the sbt
+    import owns), or (None, []) when there is no modules.xml."""
+    path = os.path.join(project, ".idea", "modules.xml")
+    if not os.path.isfile(path):
+        return None, []
+    with open(path) as f:
+        text = f.read()
+    stale = []
+    for m in MODULE_RE.finditer(text):
+        iml = m.group(1).replace("$PROJECT_DIR$", project)
+        try:
+            system = ET.parse(iml).getroot().get("external.system.id")
+        except (OSError, ET.ParseError):
+            continue
+        if system == "SBT":
+            stale.append(m.group(0))
+    return text, stale
+
+
+def drop_sbt_modules(project, dry):
+    """Remove the sbt import's modules from .idea/modules.xml."""
+    path = os.path.join(project, ".idea", "modules.xml")
+    text, stale = sbt_modules(project)
+    if not stale:
+        return
+    tracked = subprocess.run(["git", "-C", project, "ls-files", "--error-unmatch", ".idea/modules.xml"],
+                             capture_output=True).returncode == 0
+    if tracked:
+        say(f"  .idea/modules.xml is tracked by git; not dropping its {len(stale)} sbt modules "
+            "(remove them in File > Project Structure > Modules)")
+        return
+    names = [os.path.basename(MODULE_RE.match(l).group(1)) for l in stale]
+    say(f"  {'would drop' if dry else 'dropping'} {len(stale)} sbt import modules from .idea/modules.xml: {', '.join(names)}")
+    if dry:
+        return
+    backup = path + ".pre-bsp"
+    if not os.path.exists(backup):
+        with open(backup, "w") as f:
+            f.write(text)
+    for line in stale:
+        text = text.replace(line, "", 1)
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def convert(project, dry):
     idea = os.path.join(project, ".idea")
     sbt_xml, bsp_xml = os.path.join(idea, "sbt.xml"), os.path.join(idea, "bsp.xml")
     if not os.path.isfile(sbt_xml):
-        say(f"{tilde(project)}: no .idea/sbt.xml" + ("; already on BSP" if os.path.isfile(bsp_xml) else "; no sbt build linked"))
+        if not os.path.isfile(bsp_xml):
+            say(f"{tilde(project)}: no .idea/sbt.xml; no sbt build linked")
+            return True
+        if not sbt_modules(project)[1]:
+            say(f"{tilde(project)}: already on BSP")
+            return True
+        if open_in_ide(project):
+            say(f"{tilde(project)}: already on BSP but has sbt import modules left; close it first (File > Close Project)")
+            return False
+        say(f"{tilde(project)}: already on BSP")
+        drop_sbt_modules(project, dry)
         return True
     builds = linked_builds(sbt_xml, project)
     if not builds:
@@ -131,6 +198,7 @@ def convert(project, dry):
     if dry:
         say(f"  would run sbt-bsp-setup, write .idea/bsp.xml, move .idea/sbt.xml to sbt.xml.pre-bsp")
         print(text)
+        drop_sbt_modules(project, dry)
         return True
     subprocess.run([SETUP, project], check=True)
     if os.path.exists(bsp_xml):
@@ -139,21 +207,26 @@ def convert(project, dry):
         f.write(text)
     os.replace(sbt_xml, sbt_xml + ".pre-bsp")
     say(f"  wrote .idea/bsp.xml; .idea/sbt.xml is now sbt.xml.pre-bsp")
+    drop_sbt_modules(project, dry)
     return True
 
 
 def undo(project, dry):
     idea = os.path.join(project, ".idea")
-    saved, sbt_xml, bsp_xml = (os.path.join(idea, n) for n in ("sbt.xml.pre-bsp", "sbt.xml", "bsp.xml"))
+    saved, sbt_xml, bsp_xml, modules, modules_saved = (os.path.join(idea, n) for n in (
+        "sbt.xml.pre-bsp", "sbt.xml", "bsp.xml", "modules.xml", "modules.xml.pre-bsp"))
     if not os.path.isfile(saved):
         say(f"{tilde(project)}: nothing to undo (no .idea/sbt.xml.pre-bsp)")
         return True
     if open_in_ide(project):
         say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project)")
         return False
-    say(f"{tilde(project)}: {'would restore' if dry else 'restoring'} .idea/sbt.xml and remove .idea/bsp.xml")
+    also = " and .idea/modules.xml" if os.path.isfile(modules_saved) else ""
+    say(f"{tilde(project)}: {'would restore' if dry else 'restoring'} .idea/sbt.xml{also} and remove .idea/bsp.xml")
     if not dry:
         os.replace(saved, sbt_xml)
+        if also:
+            os.replace(modules_saved, modules)
         if os.path.exists(bsp_xml):
             os.remove(bsp_xml)
     return True

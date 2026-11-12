@@ -219,6 +219,14 @@ and runs `sbt-bsp-setup` again.
 *File → New → Project from Existing Sources* doesn't work for a folder that's
 already open: IntelliJ just refocuses the window.
 
+`intellij-bsp <project dir>` does the same switch from the command line for a
+closed project. It also removes the modules the sbt import created, which a
+manual switch leaves behind. If they stay, they keep claiming the source
+folders, and the Scala plugin shows "Code insight is unavailable because the sbt
+project is not loaded" even though the BSP import is fine. To clean up a
+project switched earlier, close it and run `intellij-bsp` on it again, or remove
+the old modules in **File → Project Structure → Modules**.
+
 Check it afterwards: `.idea/bsp.xml` exists, `.bsp/sbt.json` still runs
 `sbt-bsp` (IntelliJ can regenerate it; rerun `sbt-bsp-setup` if so), and
 `ps` shows one sbt server for the checkout plus a small `-bsp` client.
