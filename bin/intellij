@@ -3,9 +3,10 @@
 # This owns the IDE process (cleanup, log capture, launch); load-project owns
 # opening a project in it and starting that project's Claude session.
 #
-# Usage: intellij [--dry-run] [--clean-only] [path ...]
+# Usage: intellij [--dry-run] [--clean-only] [--which] [path ...]
 #   --dry-run     show what would be cleaned and launched; change nothing
 #   --clean-only  clean up, but don't launch the IDE
+#   --which       print the IntelliJ bundle it would launch, and exit
 #   path ...      open these instead of the default project
 #
 # Cleanup only runs when IntelliJ isn't running: everything it removes is either
@@ -14,11 +15,12 @@
 
 setopt null_glob extended_glob
 
-DRY=0 LAUNCH=1
+DRY=0 LAUNCH=1 WHICH=0
 while (( $# )); do
     case $1 in
         -n|--dry-run)  DRY=1 ;;
         --clean-only)  LAUNCH=0 ;;
+        --which)       WHICH=1 ;;
         -h|--help)     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         --)            shift; break ;;
         -*)            print -u2 "intellij: unknown option $1"; exit 2 ;;
@@ -27,16 +29,20 @@ while (( $# )); do
     shift
 done
 
-# The same bundle load-project opens: the ~/Applications/IntelliJ IDEA.app
-# symlink that pins the current version (LOAD_PROJECT_APP overrides both).
-# If the symlink is missing or stale, fall back to the newest versioned bundle.
-APP=${LOAD_PROJECT_APP:-$HOME/Applications/IntelliJ IDEA.app}
-if [[ ! -x $APP/Contents/MacOS/idea ]]; then
-    apps=( "$HOME"/Applications/IntelliJ\ IDEA\ *.app(N/nOn) )
+# The IDE bundle: LOAD_PROJECT_APP if set, else "IntelliJ IDEA.app" in
+# ~/Applications (where Toolbox installs, and where a symlink can pin the current
+# version) or /Applications (a download from jetbrains.com), else the newest
+# "IntelliJ IDEA*.app" in either (versioned, Ultimate or CE bundles).
+if [[ -n $LOAD_PROJECT_APP ]]; then
+    APP=$LOAD_PROJECT_APP
+else
+    apps=( {$HOME,}/Applications/IntelliJ\ IDEA.app(N-/)
+           {$HOME,}/Applications/IntelliJ\ IDEA*.app(N-/om) )
     APP=$apps[1]
 fi
 X="$APP/Contents/MacOS/idea"
-[[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found under ~/Applications"; exit 1 }
+[[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found in ~/Applications or /Applications; set LOAD_PROJECT_APP to its .app"; exit 1 }
+(( WHICH )) && { print -r -- "$APP"; exit 0 }
 
 # With no paths given, open this repository itself.
 PROJECT=${0:A:h:h}

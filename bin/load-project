@@ -14,13 +14,9 @@ set -euo pipefail
 #   mkdir -p ~/.config/load-project && cp load-project.tsv ~/.config/load-project/projects.tsv
 TABLE="${LOAD_PROJECT_TABLE:-${XDG_CONFIG_HOME:-$HOME/.config}/load-project/projects.tsv}"
 PENDING_DIR="${LOAD_PROJECT_PENDING:-$HOME/.cache/load-project/pending}"
-# A bundle *path*, not a name: `open -a <name>` resolves through LaunchServices,
-# which indexes bundles by their real on-disk name — so a symlink such as
-# ~/Applications/IntelliJ IDEA.app pinning "whichever version is current" is
-# invisible to it, and a fresh install that lands as "IntelliJ IDEA 2026.2.2.app"
-# breaks the name lookup. A path is followed through symlinks and needs no
-# renaming when the next version arrives.
-APP="${LOAD_PROJECT_APP:-$HOME/Applications/IntelliJ IDEA.app}"
+# bin/intellij, beside this script, finds and launches the IDE bundle
+# (LOAD_PROJECT_APP, or IntelliJ IDEA in ~/Applications or /Applications).
+INTELLIJ="$(dirname "$(realpath "$0")")/intellij"
 
 WINDOW_TIMEOUT=180   # seconds to wait for the IDE window to appear
 SHELL_TIMEOUT=25     # seconds to wait for a restored terminal tab to claim it
@@ -150,11 +146,7 @@ esac
 
 # Fail before queueing: a command left in $PENDING_DIR with no IDE to open would
 # fire at the next unrelated shell in that directory.
-if [[ "$APP" == */* ]]; then
-  [[ -d "$APP" && -x "$APP/Contents/MacOS" ]] || die "no application bundle at $APP
-  Point LOAD_PROJECT_APP at the IDE bundle, or fix the symlink:
-    ln -sfn \"\$HOME/Applications/IntelliJ IDEA <version>.app\" \"\$HOME/Applications/IntelliJ IDEA.app\""
-fi
+"$INTELLIJ" --which >/dev/null || exit 1
 
 row=$(lookup "$1") || die "unknown project '$1'. Known: $(list | tail -n +2 | awk '{print $1}' | paste -sd' ' -)"
 IFS=$'\t' read -r dir args <<<"$row"
@@ -202,8 +194,7 @@ printf 'load-project: queued for %s\n  %s\n' "$dir" "$cmd"
 
 # intellij hands $dir to a running IDE, or, when none is running, cleans up after
 # the last session and starts one with its output logged to ~/logs/idea.log.
-# It resolves the bundle the same way as $APP above, LOAD_PROJECT_APP included.
-"$(dirname "$(realpath "$0")")/intellij" "$dir"
+"$INTELLIJ" "$dir"
 
 printf 'load-project: waiting for the IntelliJ window'
 for ((i = 0; i < WINDOW_TIMEOUT; i++)); do

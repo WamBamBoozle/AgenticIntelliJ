@@ -38,8 +38,9 @@ Written and used on macOS. The shell setup and the sbt scripts run in bash
   `shasum`. The skill's log scan also reads Linux's `~/.cache/JetBrains`.
 - **macOS only:** `load-project`, `intellij-sessions` and `intellij-bsp` drive
   IntelliJ windows and terminal tabs through AppleScript; `intellij` (a zsh
-  script, which every Mac has) expects the app under `~/Applications` and IDE
-  files under `~/Library`; the skill's memory snapshot uses macOS memory tools.
+  script, which every Mac has) looks for the app in `/Applications` or
+  `~/Applications` and IDE files under `~/Library`; the skill's memory snapshot
+  uses macOS memory tools.
   Elsewhere these would need another way to open IDE windows and terminal tabs.
 
 For how this compares with other tools for running many sessions, Claude Code
