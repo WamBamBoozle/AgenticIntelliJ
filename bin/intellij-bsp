@@ -22,11 +22,19 @@ reports "Code insight is unavailable because the sbt project is not loaded".
 The .iml files stay on disk. IntelliJ loads the build over BSP the next time it
 opens the project.
 
+A checkout IntelliJ has never opened (no .idea/workspace.xml) and with no
+.idea/sbt.xml, such as a new worktree of a repository that doesn't keep .idea
+in git, gets the same treatment for the sbt builds found on disk: the
+checkout's root and one or two levels down, as sbt-bsp-setup finds them. So a
+worktree tool can run it before the first open, and IntelliJ imports the
+checkout over BSP from the start. A checkout IntelliJ has opened without
+linking sbt is left alone.
+
 Run it again on a project that is already on BSP to drop sbt modules left over
 from an earlier switch. --undo moves sbt.xml and modules.xml back and removes
 bsp.xml.
 """
-import json, os, re, subprocess, sys
+import glob, json, os, re, subprocess, sys
 from xml.etree import ElementTree as ET
 
 HOME = os.path.expanduser("~")
@@ -111,6 +119,23 @@ def linked_builds(sbt_xml, project):
     return [os.path.normpath(p.replace("$PROJECT_DIR$", project)) for p in paths]
 
 
+SKIP_RE = re.compile(r"/(target|target-test|node_modules|project)/")
+
+
+def builds_on_disk(project):
+    """sbt builds in the checkout's root and one or two levels down, skipping
+    build output and node_modules: the same places sbt-bsp-setup looks."""
+    found = []
+    base = glob.escape(project)
+    for d in [project + "/"] + sorted(glob.glob(base + "/*/")) + sorted(glob.glob(base + "/*/*/")):
+        if SKIP_RE.search(d[len(project):]):
+            continue
+        d = d.rstrip("/")
+        if os.path.isfile(os.path.join(d, "build.sbt")) and os.path.isfile(os.path.join(d, "project", "build.properties")):
+            found.append(d)
+    return found
+
+
 MODULE_RE = re.compile(r'^[ \t]*<module\b[^>]*\bfilepath="([^"]*)"[^>]*/>[ \t]*\n?', re.M)
 
 
@@ -163,10 +188,24 @@ def drop_sbt_modules(project, dry):
 def convert(project, dry):
     idea = os.path.join(project, ".idea")
     sbt_xml, bsp_xml = os.path.join(idea, "sbt.xml"), os.path.join(idea, "bsp.xml")
-    if not os.path.isfile(sbt_xml):
-        if not os.path.isfile(bsp_xml):
-            say(f"{tilde(project)}: no .idea/sbt.xml; no sbt build linked")
+    if not os.path.isdir(project):
+        say(f"{tilde(project)}: not a directory")
+        return False
+    linked = os.path.isfile(sbt_xml)
+    if linked:
+        builds = linked_builds(sbt_xml, project)
+        if not builds:
+            say(f"{tilde(project)}: .idea/sbt.xml links no build; leaving it")
             return True
+        # sbt-bsp-setup only prepares builds with both files; any other would
+        # be linked to a .bsp/sbt.json that doesn't run sbt-bsp.
+        missing = [b for b in builds if not (os.path.isfile(os.path.join(b, "build.sbt"))
+                                             and os.path.isfile(os.path.join(b, "project", "build.properties")))]
+        if missing:
+            say(f"{tilde(project)}: linked build has no build.sbt or project/build.properties: "
+                f"{', '.join(map(tilde, missing))}")
+            return False
+    elif os.path.isfile(bsp_xml):
         if not sbt_modules(project)[1]:
             say(f"{tilde(project)}: already on BSP")
             return True
@@ -176,14 +215,17 @@ def convert(project, dry):
         say(f"{tilde(project)}: already on BSP")
         drop_sbt_modules(project, dry)
         return True
-    builds = linked_builds(sbt_xml, project)
-    if not builds:
-        say(f"{tilde(project)}: .idea/sbt.xml links no build; leaving it")
+    elif os.path.isfile(os.path.join(idea, "workspace.xml")):
+        found = builds_on_disk(project)
+        say(f"{tilde(project)}: opened in IntelliJ without an sbt link; leaving it"
+            + (f" (sbt builds here: {', '.join(map(tilde, found))}; to switch, link sbt in"
+               " IntelliJ's sbt tool window, close the project and rerun)" if found else ""))
         return True
-    missing = [b for b in builds if not os.path.isfile(os.path.join(b, "build.sbt"))]
-    if missing:
-        say(f"{tilde(project)}: linked build has no build.sbt: {', '.join(map(tilde, missing))}")
-        return False
+    else:
+        builds = builds_on_disk(project)
+        if not builds:
+            say(f"{tilde(project)}: no .idea/sbt.xml and no sbt build found; nothing to do")
+            return True
     if open_in_ide(project):
         say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project)")
         return False
@@ -196,17 +238,22 @@ def convert(project, dry):
 
     say(f"{tilde(project)}: builds {', '.join(tilde(b) for b in builds)}")
     if dry:
-        say(f"  would run sbt-bsp-setup, write .idea/bsp.xml, move .idea/sbt.xml to sbt.xml.pre-bsp")
+        say("  would run sbt-bsp-setup, write .idea/bsp.xml"
+            + (", move .idea/sbt.xml to sbt.xml.pre-bsp" if linked else ""))
         print(text)
         drop_sbt_modules(project, dry)
         return True
     subprocess.run([SETUP, project], check=True)
+    os.makedirs(idea, exist_ok=True)
     if os.path.exists(bsp_xml):
         os.replace(bsp_xml, bsp_xml + ".bak")
     with open(bsp_xml, "w") as f:
         f.write(text)
-    os.replace(sbt_xml, sbt_xml + ".pre-bsp")
-    say(f"  wrote .idea/bsp.xml; .idea/sbt.xml is now sbt.xml.pre-bsp")
+    if linked:
+        os.replace(sbt_xml, sbt_xml + ".pre-bsp")
+        say("  wrote .idea/bsp.xml; .idea/sbt.xml is now sbt.xml.pre-bsp")
+    else:
+        say("  wrote .idea/bsp.xml")
     drop_sbt_modules(project, dry)
     return True
 
@@ -240,8 +287,12 @@ def main(argv):
         return 0
     args = [a for a in argv if not a.startswith("-")]
     if "--all" in argv:
+        # Saved sessions can outlive their worktrees; skip those rather than fail.
         with open(STATE) as f:
-            args += sorted({s["cwd"] for s in json.load(f)["sessions"]})
+            saved = sorted({s["cwd"] for s in json.load(f)["sessions"]})
+        for gone in (d for d in saved if not os.path.isdir(d)):
+            say(f"{tilde(gone)}: no longer exists; skipping")
+        args += [d for d in saved if os.path.isdir(d)]
     if not args:
         print(__doc__.strip(), file=sys.stderr)
         return 2

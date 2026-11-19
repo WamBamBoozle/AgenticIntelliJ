@@ -228,6 +228,18 @@ project is not loaded" even though the BSP import is fine. To clean up a
 project switched earlier, close it and run `intellij-bsp` on it again, or remove
 the old modules in **File → Project Structure → Modules**.
 
+On a checkout IntelliJ hasn't opened yet, such as a new worktree, run
+`intellij-bsp` before the first open. If the repository keeps `.idea/sbt.xml`
+in git, it switches that; if not, it links the sbt builds it finds on disk (the
+root and one or two levels down, as `sbt-bsp-setup` looks). Either way the
+first open imports over BSP. A checkout IntelliJ has already opened without
+linking sbt (it has `.idea/workspace.xml` but no `sbt.xml`) is left alone. A
+worktree tool can run it after creating the worktree: it exits 0 when it
+switched or had nothing to do, and 1 when it refused (the project is open, or
+the path is not a directory) or failed. A refusal changes nothing. A failure
+partway can leave what `sbt-bsp-setup` already did (`.bsp/`, and git's
+skip-worktree on `.idea/sbt.xml`) in place; rerun it once the cause is fixed.
+
 Check it afterwards: `.idea/bsp.xml` exists, `.bsp/sbt.json` still runs
 `sbt-bsp` (IntelliJ can regenerate it; rerun `sbt-bsp-setup` if so), and
 `ps` shows one sbt server for the checkout plus a small `-bsp` client.
