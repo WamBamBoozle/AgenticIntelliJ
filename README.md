@@ -27,6 +27,51 @@ it, nine sessions over nine checkouts need about 34 GB, and swap is empty. Most
 of the setup below exists to cut that number, or to make restarts cheap enough
 that you can close things.
 
+## The IDE and every session share one sbt server, over BSP
+
+sbt is the Scala build tool. Each sbt is a JVM of 1–2 GB, and since sbt 1.4 it
+can stay running as a server that other programs connect to; `sbt --client`
+sends commands to that server instead of starting a JVM of its own.
+
+BSP, the Build Server Protocol, is how an IDE talks to a build tool: it asks
+for the project's modules, source folders and dependencies, and has the build
+tool compile and run tests. It does for builds what LSP, the Language Server
+Protocol, does for language tooling. JetBrains
+and the Scala Center created it in 2018, and sbt has a BSP server built in.
+
+IntelliJ can load an sbt project in two ways:
+
+- **sbt import** (`.idea/sbt.xml`), its original way. IntelliJ starts its own
+  sbt to read the build, copies the structure into IntelliJ modules, and from
+  then on compiles with its own compiler and runs its own sbt shell. That is a
+  separate sbt JVM for the IDE, beside the ones terminals and Claude sessions
+  start: up to three per checkout.
+- **BSP import** (`.idea/bsp.xml`). IntelliJ runs the command in
+  `.bsp/sbt.json` to reach the checkout's sbt server, and sbt does the building.
+
+This repository makes the BSP import work in daily use, so the IDE, your
+terminals and every Claude session in a checkout share one sbt server:
+
+```
+IntelliJ ─── BSP ──▶ .bsp/sbt.json → sbt-bsp → direnv exec . sbt -bsp ─┐
+terminal ──────────▶ sbt --client ─────────────────────────────────────┼─▶ one sbt server
+Claude sessions ───▶ sbt --client ─────────────────────────────────────┘    per checkout
+```
+
+- `sbt-bsp-setup` points `.bsp/sbt.json` at `sbt-bsp`, which starts sbt in the
+  checkout's direnv environment; IntelliJ doesn't have your shell's environment
+  when it starts sbt itself.
+- `sbt/global.sbt` puts that file back after sbt rewrites it, which sbt does
+  each time a server starts, and `git-hooks/post-checkout` sets up every new
+  worktree.
+- `intellij-bsp` switches IntelliJ's side: it writes `.idea/bsp.xml`, moves
+  `.idea/sbt.xml` aside, and drops the modules the sbt import left behind.
+
+Fewer sbt JVMs is a large part of the 74 GB → 34 GB saving. Sharing one server
+also means the IDE, a terminal and a session reuse each other's compiles and
+never compile the same checkout at once: their commands run one after another.
+The [sbt section](#sbt-one-server-per-checkout) has the details.
+
 ## Platforms
 
 Written and used on macOS. The shell setup and the sbt scripts run in bash
@@ -66,6 +111,15 @@ hook. Then:
 - For the shared sbt server: link `sbt/global.sbt` into `~/.sbt/1.0/`, run
   `sbt-bsp-setup <checkout>` once per Scala checkout, and copy
   `git-hooks/post-checkout` into each such repository's `.git/hooks/`.
+- So that Claude sessions join that server instead of starting their own sbt,
+  add this line to `~/.claude/CLAUDE.md`, which every session loads:
+
+  ```
+  @~/src/AgenticIntelliJ/claude/sbt-client.md
+  ```
+
+  (Or paste the file's contents there.) Without it, sessions run plain `sbt`
+  and each starts a 1–2 GB JVM of its own.
 
 ## The pieces at a glance
 
@@ -178,10 +232,11 @@ client connects to it.
 
 ### Claude sessions: `sbt --client`
 
-`~/.claude/CLAUDE.md` tells every session to run one-off commands as
-`sbt --client "testOnly …"`, which joins the checkout's server or starts it, and
-to `sbt --client shutdown` only servers it started. Plain `sbt` is kept for
-long-running processes such as Play `run`.
+[`claude/sbt-client.md`](claude/sbt-client.md), imported from
+`~/.claude/CLAUDE.md` (see [Setup](#setup)), tells every session to run one-off
+commands as `sbt --client "testOnly …"`, which joins the checkout's server or
+starts it, and to `sbt --client shutdown` only servers it started. Plain `sbt`
+is kept for long-running processes such as Play `run`.
 
 ### IntelliJ: import over BSP, not as an sbt project
 
@@ -334,9 +389,10 @@ duplicated across Claude sessions.
 | `plugins/intellij-health/` | Claude Code plugin with the `intellij-health` skill: IDE log and memory health check |
 | `.claude-plugin/marketplace.json` | makes this repository a plugin marketplace |
 | `.claude/skills/intellij-health` | symlink, so sessions in this repository load the skill without installing |
+| `claude/sbt-client.md` | instructions that make Claude sessions use `sbt --client` |
 | `PRIOR_ART.md` | related projects and how this one differs |
 | `AGENTS.md`, `CLAUDE.md` | instructions for coding agents working in this repository |
-| `~/.claude/CLAUDE.md` | the `sbt --client` rule for sessions |
+| `~/.claude/CLAUDE.md` | imports `claude/sbt-client.md`, so every session uses `sbt --client` |
 | `~/.cache/load-project/pending/` | queued session commands, one file per directory |
 | `~/.cache/intellij-sessions/state.json` | the last saved set of sessions |
 | `~/logs/idea.log`, `~/logs/idea_backup.log`, `~/logs/intellij-sessions.log` | logs |
