@@ -19,11 +19,19 @@ terminal tabs, and a health check for the IDE and the machine under that load.
 - [Crystal, now Nimbalyst](https://github.com/stravu/crystal), is a desktop app
   for parallel sessions in git worktrees. Conductor is a macOS app in the same
   vein, and Anthropic's Claude desktop app also runs sessions side by side.
+- [JetBrains Air](https://www.jetbrains.com/air/) is JetBrains' own take: one
+  place to run Claude, Codex, Junie, Copilot and any agent that speaks ACP, with
+  several projects open, each with its own sessions, and their changed files
+  and outgoing commits tracked. It runs in JetBrains IDEs, on the web and as a
+  CLI, and agents can run in the cloud. Its page doesn't mention build tools or
+  local memory use.
 
-These organise work by task, usually a worktree per task. Here the unit is the
-project: each checkout has its IDE window, its sbt server and its sessions,
-and sessions in other checkouts are asked rather than duplicated (see
-[agentic-development.html](agentic-development.html)).
+Most of these organise work by task, usually a worktree per task. Here the unit
+is the project: each checkout has its IDE window, its sbt server and its
+sessions, and sessions in other checkouts are asked rather than duplicated (see
+[agentic-development.html](agentic-development.html)). Air also groups sessions
+by project; what this repository adds beside it is the sbt server those
+sessions share with the IDE, and the memory check.
 
 ## Claude Code inside JetBrains IDEs
 
