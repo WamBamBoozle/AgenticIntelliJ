@@ -54,7 +54,8 @@ any command, and both skill scripts.
 These change the machine or other sessions; run them only when the user asks:
 
 - `intellij` (starts IntelliJ and cleans up after its last run),
-  `intellij-sessions save|restore` (shuts the IDE down, restarts sessions),
+  `intellij-sessions save|restore` (shuts the IDE, or one project's window,
+  down and restarts its sessions),
   `load-project <name>` (opens a window, starts a session).
 - `sbt-bsp-setup`, `intellij-bsp` (rewrite a checkout's `.bsp/` and `.idea/` files).
 - Killing processes or changing settings that the health check recommends.

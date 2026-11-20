@@ -127,7 +127,7 @@ hook. Then:
 |---|---|
 | `load-project <name>` | Open one project in IntelliJ and start its Claude session in a terminal there |
 | `intellij [paths]` | Start IntelliJ, cleaning up after the last run first; hand paths to it if it's already up |
-| `intellij-sessions save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all |
+| `intellij-sessions save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all. Given a directory, do it for that one window |
 | `sbt-bsp`, `sbt-bsp-setup` | Make IntelliJ, Claude and you share one sbt server per checkout |
 | `intellij-bsp` | Switch closed IntelliJ projects from sbt import to BSP |
 | load-project hook (`shell/agentic-intellij.sh`) | Runs queued session commands when a new IntelliJ terminal opens |
@@ -193,6 +193,14 @@ intellij-sessions restore    # after
 intellij-sessions show       # what's running now, and what was saved
 ```
 
+Given a project directory, `save` and `restore` act on that one window and
+leave IntelliJ and its other windows running:
+
+```
+intellij-sessions save <dir>     # record its sessions, close just its window
+intellij-sessions restore <dir>  # reopen it and resume them
+```
+
 **`save`** records every Claude session running in an IntelliJ terminal into
 `~/.cache/intellij-sessions/state.json`: name, session ID, directory, and
 original flags. It then stops the sessions and quits IntelliJ.
@@ -201,6 +209,10 @@ original flags. It then stops the sessions and quits IntelliJ.
 - It works from inside a Claude session in IntelliJ: the part that stops
   sessions and quits the IDE detaches first, so it survives.
 - Progress goes to `~/logs/intellij-sessions.log`.
+- For one project, it closes the window with **File → Close Project** and
+  keeps the record in `~/.cache/intellij-sessions/projects/`, apart from the
+  whole-IDE save. If the window doesn't close (a dialog is waiting), nothing is
+  stopped.
 
 **`restore`** queues each session's resume command (`claude <original flags>
 --resume <id> -n <name>`) for its directory and starts IntelliJ through
@@ -276,7 +288,13 @@ and runs `sbt-bsp-setup` again.
 already open: IntelliJ just refocuses the window.
 
 `intellij-bsp <project dir>` does the same switch from the command line for a
-closed project. It also removes the modules the sbt import created, which a
+closed project. To switch an open one without losing its sessions:
+
+```
+intellij-sessions save <dir> && intellij-bsp <dir> && intellij-sessions restore <dir>
+```
+
+`intellij-bsp` also removes the modules the sbt import created, which a
 manual switch leaves behind. If they stay, they keep claiming the source
 folders, and the Scala plugin shows "Code insight is unavailable because the sbt
 project is not loaded" even though the BSP import is fine. To clean up a
@@ -400,4 +418,5 @@ duplicated across Claude sessions.
 | `~/.claude/CLAUDE.md` | imports `claude/sbt-client.md`, so every session uses `sbt --client` |
 | `~/.cache/load-project/pending/` | queued session commands, one file per directory |
 | `~/.cache/intellij-sessions/state.json` | the last saved set of sessions |
+| `~/.cache/intellij-sessions/projects/` | the last save of each project saved on its own |
 | `~/logs/idea.log`, `~/logs/idea_backup.log`, `~/logs/intellij-sessions.log` | logs |
