@@ -2,7 +2,13 @@
 # post-checkout hook for a Scala repository you work on with IntelliJ over BSP.
 # Install per repository (it stays local, not committed there):
 #   cp git-hooks/post-checkout <repo>/.git/hooks/post-checkout
-# A new worktree checks out from the null ref; set up IntelliJ's BSP connection
-# for it with sbt-bsp-setup (this repo's bin/, which must be on PATH).
-[ "$1" = 0000000000000000000000000000000000000000 ] && command -v sbt-bsp-setup >/dev/null && sbt-bsp-setup "$PWD"
+# A new worktree checks out from the null ref. IntelliJ hasn't opened it yet,
+# so switch it to BSP now with intellij-bsp, which also runs sbt-bsp-setup;
+# otherwise its first open would use the sbt import. Both are in this repo's
+# bin/, which must be on PATH.
+if [ "$1" = 0000000000000000000000000000000000000000 ]; then
+    if command -v intellij-bsp >/dev/null; then intellij-bsp "$PWD"
+    elif command -v sbt-bsp-setup >/dev/null; then sbt-bsp-setup "$PWD"
+    fi
+fi
 exit 0

@@ -15,7 +15,7 @@ is no build.
 | `bin/` | the commands, run by name with `bin/` on `PATH` |
 | `shell/agentic-intellij.sh` | sourced from `~/.bashrc` or `~/.zshrc`: `PATH`, `SBT_OPTS`, the hook that starts queued sessions |
 | `claude/sbt-client.md` | instructions users import into `~/.claude/CLAUDE.md` so sessions use `sbt --client`; keep it generic |
-| `sbt/global.sbt`, `git-hooks/post-checkout` | keep each checkout's BSP connection on `bin/sbt-bsp` |
+| `sbt/global.sbt`, `git-hooks/post-checkout` | keep each checkout's BSP connection on `bin/sbt-bsp`; the hook also switches each new worktree to BSP with `intellij-bsp` |
 | `plugins/intellij-health/` | the plugin; its skill is in `skills/intellij-health/` |
 | `.claude-plugin/marketplace.json` | lists the plugin so `/plugin marketplace add` can find it |
 | `.claude/skills/intellij-health` | symlink into the plugin, so sessions here load the skill |

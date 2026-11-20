@@ -258,8 +258,8 @@ down, such as `backend/`) and
 marks the team-tracked `.idea/sbt.xml` as skip-worktree, so your switch to BSP
 never shows up in `git status`. Undo with
 `git update-index --no-skip-worktree .idea/sbt.xml`. A local (uncommitted)
-`post-checkout` hook in each repo (`git-hooks/post-checkout` here) runs it on
-every new git worktree.
+`post-checkout` hook in each repo (`git-hooks/post-checkout` here) runs
+`intellij-bsp`, which runs it, on every new git worktree (see below).
 
 sbt itself rewrites `.bsp/sbt.json` every time a server starts. `sbt/global.sbt`
 undoes that: in builds `sbt-bsp-setup` has prepared, it waits for the rewrite
@@ -287,13 +287,18 @@ On a checkout IntelliJ hasn't opened yet, such as a new worktree, run
 `intellij-bsp` before the first open. If the repository keeps `.idea/sbt.xml`
 in git, it switches that; if not, it links the sbt builds it finds on disk (the
 root and one or two levels down, as `sbt-bsp-setup` looks). Either way the
-first open imports over BSP. A checkout IntelliJ has already opened without
+first open imports over BSP. The `post-checkout` hook does this for every new
+worktree. A checkout IntelliJ has already opened without
 linking sbt (it has `.idea/workspace.xml` but no `sbt.xml`) is left alone. A
 worktree tool can run it after creating the worktree: it exits 0 when it
 switched or had nothing to do, and 1 when it refused (the project is open, or
 the path is not a directory) or failed. A refusal changes nothing. A failure
 partway can leave what `sbt-bsp-setup` already did (`.bsp/`, and git's
 skip-worktree on `.idea/sbt.xml`) in place; rerun it once the cause is fixed.
+
+Settings you added by hand to the sbt import's modules, such as a Python
+interpreter facet, go with them; `intellij-bsp` names each one, and you set it
+up again on the BSP module of the same directory.
 
 Check it afterwards: `.idea/bsp.xml` exists, `.bsp/sbt.json` still runs
 `sbt-bsp` (IntelliJ can regenerate it; rerun `sbt-bsp-setup` if so), and
@@ -384,7 +389,7 @@ duplicated across Claude sessions.
 | `bin/sbt-bsp`, `bin/sbt-bsp-setup` | BSP launcher and per-checkout setup |
 | `bin/intellij-bsp` | switch closed IntelliJ projects from sbt import to BSP |
 | `sbt/global.sbt` | sbt global hook that keeps `.bsp/sbt.json` on `sbt-bsp` |
-| `git-hooks/post-checkout` | runs `sbt-bsp-setup` on each new worktree |
+| `git-hooks/post-checkout` | runs `intellij-bsp` on each new worktree, so IntelliJ opens it over BSP |
 | `shell/agentic-intellij.sh` | `PATH`, `SBT_OPTS`, the load-project hook |
 | `plugins/intellij-health/` | Claude Code plugin with the `intellij-health` skill: IDE log and memory health check |
 | `.claude-plugin/marketplace.json` | makes this repository a plugin marketplace |

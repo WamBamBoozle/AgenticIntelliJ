@@ -171,8 +171,18 @@ def drop_sbt_modules(project, dry):
         say(f"  .idea/modules.xml is tracked by git; not dropping its {len(stale)} sbt modules "
             "(remove them in File > Project Structure > Modules)")
         return
-    names = [os.path.basename(MODULE_RE.match(l).group(1)) for l in stale]
-    say(f"  {'would drop' if dry else 'dropping'} {len(stale)} sbt import modules from .idea/modules.xml: {', '.join(names)}")
+    imls = [MODULE_RE.match(l).group(1).replace("$PROJECT_DIR$", project) for l in stale]
+    say(f"  {'would drop' if dry else 'dropping'} {len(stale)} sbt import modules from .idea/modules.xml: "
+        f"{', '.join(map(os.path.basename, imls))}")
+    # The sbt import adds only Scala facets; any other (a Python interpreter,
+    # say) was set up by hand and has to be set up again on the BSP modules.
+    for iml in imls:
+        try:
+            added = sorted({f.get("type") for f in ET.parse(iml).getroot().iter("facet")} - {"scala", None})
+        except (OSError, ET.ParseError):
+            continue
+        if added:
+            say(f"  {os.path.basename(iml)} has a {', '.join(added)} facet; set it up again on the BSP module")
     if dry:
         return
     backup = path + ".pre-bsp"
