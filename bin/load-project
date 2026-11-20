@@ -81,21 +81,22 @@ pending_key() { printf '%s' "$1" | shasum | cut -d' ' -f1; }
 # Window titles look like "<project name> – <file>", sometimes with a
 # "[<module>]" or "[<~-form path>]" after the name. The path appears only when
 # IntelliJ needs it to tell projects apart, so match a window either by the
-# bracketed path or by its title starting with the project's name: .idea/.name
-# when the project was renamed, the directory's name otherwise.
-# Arguments: <~-form path> <project name>.
+# bracketed path or by its title starting with the directory's name or with
+# .idea/.name (a repository can commit a .name its worktrees' titles don't use).
+# Arguments: <~-form path> <directory name> <.idea/.name, or the directory name>.
 ide_window_exists() {
-  osascript - "$1" "$2" <<'OSA' 2>/dev/null | grep -q yes
+  osascript - "$1" "$2" "$3" <<'OSA' 2>/dev/null | grep -q yes
 on run argv
   set marker to "[" & (item 1 of argv) & "]"
   set pname to item 2 of argv
+  set iname to item 3 of argv
   tell application "System Events"
     if not (exists process "idea") then return "no"
     tell process "idea"
       set titles to name of windows
       repeat with i from 1 to count of titles
         set t to item i of titles
-        if t contains marker or t is pname or t starts with (pname & " ") then return "yes"
+        if t contains marker or t is pname or t starts with (pname & " ") or t is iname or t starts with (iname & " ") then return "yes"
       end repeat
     end tell
   end tell
@@ -107,10 +108,11 @@ OSA
 # Raise the project's window and toggle the Terminal tool window (alt-F12).
 # Arguments as for ide_window_exists; a bracketed-path match wins over a name match.
 open_ide_terminal() {
-  osascript - "$1" "$2" <<'OSA' >/dev/null 2>&1
+  osascript - "$1" "$2" "$3" <<'OSA' >/dev/null 2>&1
 on run argv
   set marker to "[" & (item 1 of argv) & "]"
   set pname to item 2 of argv
+  set iname to item 3 of argv
   tell application "System Events"
     tell process "idea"
       set w to missing value
@@ -121,7 +123,7 @@ on run argv
           set w to x
           exit repeat
         end if
-        if w is missing value and (t is pname or t starts with (pname & " ")) then set w to x
+        if w is missing value and (t is pname or t starts with (pname & " ") or t is iname or t starts with (iname & " ")) then set w to x
       end repeat
       if w is missing value then return
       perform action "AXRaise" of w
@@ -157,8 +159,8 @@ base="$(basename "$dir")"
 # ~-form path is what IntelliJ shows in window titles.
 tildepath="~${dir#$HOME}"
 # The name IntelliJ puts first in the window title.
-pname="$base"
-[[ -s "$dir/.idea/.name" ]] && pname="$(head -n 1 "$dir/.idea/.name")"
+pname="$base" iname="$base"
+[[ -s "$dir/.idea/.name" ]] && iname="$(head -n 1 "$dir/.idea/.name")"
 cmd="claude $args"
 
 # What gets queued, as opposed to what is reported. The load-project hook eval's this
@@ -198,12 +200,12 @@ printf 'load-project: queued for %s\n  %s\n' "$dir" "$cmd"
 
 printf 'load-project: waiting for the IntelliJ window'
 for ((i = 0; i < WINDOW_TIMEOUT; i++)); do
-  ide_window_exists "$tildepath" "$pname" && break
+  ide_window_exists "$tildepath" "$pname" "$iname" && break
   printf '.'; sleep 1
 done
 printf '\n'
 
-if ! ide_window_exists "$tildepath" "$pname"; then
+if ! ide_window_exists "$tildepath" "$pname" "$iname"; then
   printf 'load-project: window did not appear within %ss.\n' "$WINDOW_TIMEOUT" >&2
   printf '  Open a terminal there yourself (alt-F12) and the session will start.\n' >&2
   exit 1
@@ -218,7 +220,7 @@ for ((i = 0; i < SHELL_TIMEOUT; i++)); do
 done
 
 if [[ -f "$pend" ]]; then
-  open_ide_terminal "$tildepath" "$pname"
+  open_ide_terminal "$tildepath" "$pname" "$iname"
   for ((i = 0; i < 15; i++)); do
     [[ -f "$pend" ]] || break
     sleep 1
