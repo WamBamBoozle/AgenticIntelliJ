@@ -29,16 +29,19 @@ while (( $# )); do
     shift
 done
 
-# The IDE bundle: LOAD_PROJECT_APP if set, else "IntelliJ IDEA.app" in
-# ~/Applications (where Toolbox installs, and where a symlink can pin the current
-# version) or /Applications (a download from jetbrains.com), else the newest
-# "IntelliJ IDEA*.app" in either (versioned, Ultimate or CE bundles).
+# The IDE bundle: LOAD_PROJECT_APP if set, which pins a version; else the
+# "IntelliJ IDEA*.app" in ~/Applications (Toolbox) or /Applications (a download
+# from jetbrains.com) with the highest build number. Toolbox can name each
+# version's bundle after it ("IntelliJ IDEA 2026.3.app"), so after an update
+# this picks the new one with no link to maintain.
 if [[ -n $LOAD_PROJECT_APP ]]; then
     APP=$LOAD_PROJECT_APP
 else
-    apps=( {$HOME,}/Applications/IntelliJ\ IDEA.app(N-/)
-           {$HOME,}/Applications/IntelliJ\ IDEA*.app(N-/om) )
-    APP=$apps[1]
+    # CFBundleVersion is e.g. IU-262.10968.63; sort on the numbers after the dash.
+    APP=$(for a in {$HOME,}/Applications/IntelliJ\ IDEA*.app(N-/); do
+              b=$(plutil -extract CFBundleVersion raw -o - "$a/Contents/Info.plist" 2>/dev/null) || continue
+              print -r -- "${b#*-}"$'\t'"$a"
+          done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -f2-)
 fi
 X="$APP/Contents/MacOS/idea"
 [[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found in ~/Applications or /Applications; set LOAD_PROJECT_APP to its .app"; exit 1 }
@@ -159,6 +162,10 @@ if ide_running; then
         cleanup
         exit 0
     fi
+    # Hand the paths to the running IDE's own bundle: a newer bundle installed
+    # since it started has its own settings and would start a second IDE.
+    run=${$(ps -axo command= | grep -m 1 -o '^/.*/IntelliJ IDEA[^/]*\.app/Contents/MacOS/idea')}
+    [[ -x $run ]] && X=$run
     (( LAUNCH )) && nohup "$X" "${@:-$PROJECT}" </dev/null >/dev/null 2>&1 &!
     exit 0
 fi
