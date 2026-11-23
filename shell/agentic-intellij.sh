@@ -4,7 +4,7 @@
 #   source ~/src/AgenticIntelliJ/shell/agentic-intellij.sh
 #
 # It puts this repository's bin/ on PATH, sets JVM options for sbt, and runs any
-# session `load-project` or `intellij-sessions restore` queued for the directory
+# session `load-project` or `bench restore` queued for the directory
 # an IntelliJ terminal opens in.
 
 # This repository's bin/, found from this file's own location. zsh's form is
@@ -34,7 +34,7 @@ unset __ai_self __ai_bin
 #   unused memory back to the OS.
 export SBT_OPTS="-XX:+IgnoreUnrecognizedVMOptions -XX:+UseCompactObjectHeaders -XX:G1PeriodicGCInterval=60000"
 
-# Run a session queued by `load-project` or `intellij-sessions` when a fresh
+# Run a session queued by `load-project` or `bench` when a fresh
 # IntelliJ terminal opens here. The queue file, named by the sha1 of this
 # directory's real path, holds one command per line, since several sessions can
 # share a directory; each new terminal takes the first line and removes it

@@ -5,12 +5,12 @@ its own sbt shell.
 
 Usage:
   intellij-bsp [--dry-run] <project dir> ...
-  intellij-bsp [--dry-run] --all      every project in the last `intellij-sessions save`
+  intellij-bsp [--dry-run] --all      every project in the last `bench save`
   intellij-bsp --undo <project dir> ...
 
 The project must not be open in IntelliJ, since the IDE rewrites .idea/ when it
-closes a project. Close it first: `intellij-sessions save <project dir>` closes
-its window and keeps its Claude sessions for `intellij-sessions restore <project dir>`;
+closes a project. Close it first: `bench save <project dir>` closes
+its window and keeps its Claude sessions for `bench restore <project dir>`;
 File > Close Project or quitting IntelliJ also works.
 
 For each sbt build linked in .idea/sbt.xml, it runs sbt-bsp-setup (so
@@ -39,7 +39,9 @@ import glob, json, os, re, subprocess, sys
 from xml.etree import ElementTree as ET
 
 HOME = os.path.expanduser("~")
-STATE = os.path.join(HOME, ".cache", "intellij-sessions", "state.json")
+# bench's last whole-IDE save; ~/.cache/intellij-sessions until bench next runs.
+STATE = next((f for f in (os.path.join(HOME, ".cache", d, "state.json") for d in ("bench", "intellij-sessions"))
+              if os.path.exists(f)), os.path.join(HOME, ".cache", "bench", "state.json"))
 SETUP = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sbt-bsp-setup")
 
 BSP_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -221,7 +223,7 @@ def convert(project, dry):
             say(f"{tilde(project)}: already on BSP")
             return True
         if open_in_ide(project):
-            say(f"{tilde(project)}: already on BSP but has sbt import modules left; close it first (File > Close Project, or intellij-sessions save <dir>)")
+            say(f"{tilde(project)}: already on BSP but has sbt import modules left; close it first (File > Close Project, or bench save <dir>)")
             return False
         say(f"{tilde(project)}: already on BSP")
         drop_sbt_modules(project, dry)
@@ -238,7 +240,7 @@ def convert(project, dry):
             say(f"{tilde(project)}: no .idea/sbt.xml and no sbt build found; nothing to do")
             return True
     if open_in_ide(project):
-        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project, or intellij-sessions save <dir>)")
+        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project, or bench save <dir>)")
         return False
 
     settings = []
@@ -277,7 +279,7 @@ def undo(project, dry):
         say(f"{tilde(project)}: nothing to undo (no .idea/sbt.xml.pre-bsp)")
         return True
     if open_in_ide(project):
-        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project, or intellij-sessions save <dir>)")
+        say(f"{tilde(project)}: open in IntelliJ; close it first (File > Close Project, or bench save <dir>)")
         return False
     also = " and .idea/modules.xml" if os.path.isfile(modules_saved) else ""
     say(f"{tilde(project)}: {'would restore' if dry else 'restoring'} .idea/sbt.xml{also} and remove .idea/bsp.xml")

@@ -27,6 +27,18 @@ it, nine sessions over nine checkouts need about 34 GB, and swap is empty. Most
 of the setup below exists to cut that number, or to make restarts cheap enough
 that you can close things.
 
+## Terms
+
+- **Checkout:** a git working copy on disk, a clone or a worktree. Each one gets
+  its own sbt server.
+- **Project:** a checkout opened in IntelliJ, in a window of its own.
+- **Claude session:** one Claude Code process in a terminal tab of a project's
+  window, started with a `-n` name its peers can address.
+- **Bench:** a project's window together with the Claude sessions in its
+  terminal tabs. `load-project` starts one; `bench save <dir>` and
+  `restore <dir>` close and reopen one.
+- **IntelliJ:** the one IDE process that holds every bench.
+
 ## The IDE and every session share one sbt server, over BSP
 
 sbt is the Scala build tool. Each sbt is a JVM of 1–2 GB, and since sbt 1.4 it
@@ -81,7 +93,7 @@ Written and used on macOS. The shell setup and the sbt scripts run in bash
   `sbt/global.sbt`, `git-hooks/post-checkout`), `SBT_OPTS` and the load-project
   hook need only bash or zsh, sbt, git, direnv and the usual `realpath` and
   `shasum`. The skill's log scan also reads Linux's `~/.cache/JetBrains`.
-- **macOS only:** `load-project`, `intellij-sessions` and `intellij-bsp` drive
+- **macOS only:** `load-project`, `bench` and `intellij-bsp` drive
   IntelliJ windows and terminal tabs through AppleScript; `intellij` (a zsh
   script, which every Mac has) looks for the app in `/Applications` or
   `~/Applications` and IDE files under `~/Library`; the skill's memory snapshot
@@ -125,9 +137,9 @@ hook. Then:
 
 | Tool | Job |
 |---|---|
-| `load-project <name>` | Open one project in IntelliJ and start its Claude session in a terminal there |
+| `load-project <name>` | Start a bench: open one project in IntelliJ and start its Claude session in a terminal there |
 | `intellij [paths]` | Start IntelliJ, cleaning up after the last run first; hand paths to it if it's already up |
-| `intellij-sessions save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all. Given a directory, do it for that one window |
+| `bench save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all. Given a directory, do it for that one bench |
 | `sbt-bsp`, `sbt-bsp-setup` | Make IntelliJ, Claude and you share one sbt server per checkout |
 | `intellij-bsp` | Switch closed IntelliJ projects from sbt import to BSP |
 | load-project hook (`shell/agentic-intellij.sh`) | Runs queued session commands when a new IntelliJ terminal opens |
@@ -160,7 +172,7 @@ with `eval "$(direnv export bash)"` (or `zsh`, whichever shell runs them). An un
 ## Starting IntelliJ: `intellij`
 
 `intellij` owns the IDE process. `load-project` and
-`intellij-sessions` both call it.
+`bench` both call it.
 
 - **IntelliJ already running:** it hands the paths to the IDE and touches
   nothing else.
@@ -185,32 +197,32 @@ The cleanup removes what earlier runs leave behind:
 `intellij --dry-run` shows what would be cleaned and launched.
 `intellij --clean-only` cleans without launching.
 
-## Restarting without losing sessions: `intellij-sessions`
+## Restarting without losing sessions: `bench`
 
 ```
-intellij-sessions save       # before a reboot or IDE update
-intellij-sessions restore    # after
-intellij-sessions show       # what's running now, and what was saved
+bench save       # before a reboot or IDE update
+bench restore    # after
+bench show       # what's running now, and what was saved
 ```
 
-Given a project directory, `save` and `restore` act on that one window and
-leave IntelliJ and its other windows running:
+Given a project directory, `save` and `restore` act on that one bench and
+leave IntelliJ and the other benches running:
 
 ```
-intellij-sessions save <dir>     # record its sessions, close just its window
-intellij-sessions restore <dir>  # reopen it and resume them
+bench save <dir>     # record the bench's sessions, close its window
+bench restore <dir>  # reopen the bench and resume them
 ```
 
 **`save`** records every Claude session running in an IntelliJ terminal into
-`~/.cache/intellij-sessions/state.json`: name, session ID, directory, and
+`~/.cache/bench/state.json`: name, session ID, directory, and
 original flags. It then stops the sessions and quits IntelliJ.
 
 - It refuses while a session is busy; `--force` overrides.
 - It works from inside a Claude session in IntelliJ: the part that stops
   sessions and quits the IDE detaches first, so it survives.
-- Progress goes to `~/logs/intellij-sessions.log`.
-- For one project, it closes the window with **File → Close Project** and
-  keeps the record in `~/.cache/intellij-sessions/projects/`, apart from the
+- Progress goes to `~/logs/bench.log`.
+- For one bench, it closes the window with **File → Close Project** and
+  keeps the record in `~/.cache/bench/projects/`, apart from the
   whole-IDE save. If the window doesn't close (a dialog is waiting), nothing is
   stopped.
 
@@ -291,7 +303,7 @@ already open: IntelliJ just refocuses the window.
 closed project. To switch an open one without losing its sessions:
 
 ```
-intellij-sessions save <dir> && intellij-bsp <dir> && intellij-sessions restore <dir>
+bench save <dir> && intellij-bsp <dir> && bench restore <dir>
 ```
 
 `intellij-bsp` also removes the modules the sbt import created, which a
@@ -403,7 +415,8 @@ duplicated across Claude sessions.
 | `bin/load-project.tsv` | example project table |
 | `~/.config/load-project/projects.tsv` | your project table (not in the repo) |
 | `bin/intellij` | IDE launcher and cleanup |
-| `bin/intellij-sessions` | save and restore sessions |
+| `bin/bench` | save and restore benches |
+| `bin/intellij-sessions` | the old name for `bench`; runs it |
 | `bin/sbt-bsp`, `bin/sbt-bsp-setup` | BSP launcher and per-checkout setup |
 | `bin/intellij-bsp` | switch closed IntelliJ projects from sbt import to BSP |
 | `sbt/global.sbt` | sbt global hook that keeps `.bsp/sbt.json` on `sbt-bsp` |
@@ -417,6 +430,6 @@ duplicated across Claude sessions.
 | `AGENTS.md`, `CLAUDE.md` | instructions for coding agents working in this repository |
 | `~/.claude/CLAUDE.md` | imports `claude/sbt-client.md`, so every session uses `sbt --client` |
 | `~/.cache/load-project/pending/` | queued session commands, one file per directory |
-| `~/.cache/intellij-sessions/state.json` | the last saved set of sessions |
-| `~/.cache/intellij-sessions/projects/` | the last save of each project saved on its own |
-| `~/logs/idea.log`, `~/logs/idea_backup.log`, `~/logs/intellij-sessions.log` | logs |
+| `~/.cache/bench/state.json` | the last saved set of sessions |
+| `~/.cache/bench/projects/` | the last save of each bench saved on its own |
+| `~/logs/idea.log`, `~/logs/idea_backup.log`, `~/logs/bench.log` | logs |

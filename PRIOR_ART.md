@@ -27,9 +27,9 @@ terminal tabs, and a health check for the IDE and the machine under that load.
   local memory use.
 
 Most of these organise work by task, usually a worktree per task. Here the unit
-is the project: each checkout has its IDE window, its sbt server and its
-sessions, and sessions in other checkouts are asked rather than duplicated (see
-[agentic-development.html](agentic-development.html)). Air also groups sessions
+is the bench: a checkout's IDE window and the sessions in it, which share the
+checkout's sbt server. Sessions in other checkouts are asked rather than
+duplicated (see [agentic-development.html](agentic-development.html)). Air also groups sessions
 by project; what this repository adds beside it is the sbt server those
 sessions share with the IDE, and the memory check.
 
@@ -59,7 +59,7 @@ IntelliJ terminal tabs.
   in each restored pane. [claude-session-restore](https://github.com/Supersynergy/claude-session-restore)
   does it for several terminal apps.
 
-`intellij-sessions` differs in that it also shuts IntelliJ down and starts it
+`bench` differs in that it also shuts IntelliJ down and starts it
 again, needs no IDE plugin or Claude Code hook (it reads the session files
 Claude Code already writes), and restores the sessions' original flags,
 including their `-n` names. It is macOS only.
