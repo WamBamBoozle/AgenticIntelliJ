@@ -26,9 +26,9 @@ is no build.
 - Scripts in `bin/` find each other through their own real path; never hard-code
   where this repository or its `bin/` lives.
 - `shell/agentic-intellij.sh`, `bin/sbt-bsp`, `bin/sbt-bsp-setup` and
-  `bin/load-project` must run in bash 3.2 (macOS's `/bin/bash`) and, for the
+  `bin/intellij-sessions` must run in bash 3.2 (macOS's `/bin/bash`) and, for the
   shell file, in zsh too. No `mapfile`, associative arrays or zsh-only syntax.
-- `bin/intellij` is zsh and macOS only. `load-project`, `bench`,
+- `bin/intellij` is zsh and macOS only. `bench`,
   `intellij-bsp` and the skill's `memory_snapshot.py` use AppleScript or macOS
   memory tools.
 
@@ -37,16 +37,16 @@ is no build.
 There are no tests. Check what you touched:
 
 ```sh
-bash -n bin/load-project bin/sbt-bsp bin/sbt-bsp-setup bin/intellij-sessions shell/agentic-intellij.sh
-/bin/bash -n bin/sbt-bsp-setup            # macOS's bash 3.2
+bash -n bin/sbt-bsp bin/sbt-bsp-setup bin/intellij-sessions shell/agentic-intellij.sh
+/bin/bash -n bin/sbt-bsp-setup bin/intellij-sessions  # macOS's bash 3.2
 zsh -n shell/agentic-intellij.sh bin/intellij
 python3 -m py_compile bin/intellij-bsp bin/bench \
   plugins/intellij-health/skills/intellij-health/scripts/*.py
 claude plugin validate . && claude plugin validate plugins/intellij-health
 ```
 
-Read-only and safe to run: `load-project --list`, `load-project --dry-run <name>`,
-`bench show`, `bench save|restore --dry-run`, `--help` on
+Read-only and safe to run: `bench show`,
+`bench open|save|restore|prune --dry-run`, `--help` on
 any command, and both skill scripts.
 
 ## Ask before running
@@ -56,7 +56,8 @@ These change the machine or other sessions; run them only when the user asks:
 - `intellij` (starts IntelliJ and cleans up after its last run),
   `bench save|restore` (shuts the IDE, or one bench, down and
   restarts its sessions),
-  `load-project <name>` (starts a bench: opens a window, starts a session).
+  `bench open <project>` (starts a bench: opens a window, starts sessions),
+  `bench prune` (deletes saves whose directory is gone).
   README's "Terms" section defines checkout, project, Claude session and bench.
 - `sbt-bsp-setup`, `intellij-bsp` (rewrite a checkout's `.bsp/` and `.idea/` files).
 - Killing processes or changing settings that the health check recommends.

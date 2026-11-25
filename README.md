@@ -35,8 +35,8 @@ that you can close things.
 - **Claude session:** one Claude Code process in a terminal tab of a project's
   window, started with a `-n` name its peers can address.
 - **Bench:** a project's window together with the Claude sessions in its
-  terminal tabs. `load-project` starts one; `bench save <dir>` and
-  `restore <dir>` close and reopen one.
+  terminal tabs. `bench open` starts one; `bench save <project>` and
+  `restore <project>` close and reopen one.
 - **IntelliJ:** the one IDE process that holds every bench.
 
 ## The IDE and every session share one sbt server, over BSP
@@ -90,10 +90,10 @@ Written and used on macOS. The shell setup and the sbt scripts run in bash
 (3.2 or later) or zsh; the rest depends on the platform:
 
 - **Portable:** the shared sbt server (`sbt-bsp`, `sbt-bsp-setup`,
-  `sbt/global.sbt`, `git-hooks/post-checkout`), `SBT_OPTS` and the load-project
+  `sbt/global.sbt`, `git-hooks/post-checkout`), `SBT_OPTS` and the queue
   hook need only bash or zsh, sbt, git, direnv and the usual `realpath` and
   `shasum`. The skill's log scan also reads Linux's `~/.cache/JetBrains`.
-- **macOS only:** `load-project`, `bench` and `intellij-bsp` drive
+- **macOS only:** `bench` and `intellij-bsp` drive
   IntelliJ windows and terminal tabs through AppleScript; `intellij` (a zsh
   script, which every Mac has) looks for the app in `/Applications` or
   `~/Applications` and IDE files under `~/Library`; the skill's memory snapshot
@@ -115,11 +115,11 @@ puts `claude` and `direnv` on your `PATH`:
 source ~/src/AgenticIntelliJ/shell/agentic-intellij.sh
 ```
 
-It adds `bin/` to `PATH`, sets `SBT_OPTS` (below), and installs the load-project
-hook. Then:
+It adds `bin/` to `PATH`, sets `SBT_OPTS` (below), and installs the queue
+hook that starts sessions in new IntelliJ terminals. Then:
 
-- Copy `bin/load-project.tsv` to `~/.config/load-project/projects.tsv` and list
-  your projects in it.
+- Optionally, set `BENCH_CLAUDE_ARGS` there to the `claude` flags a new
+  session should start with, such as `--model opus`.
 - For the shared sbt server: link `sbt/global.sbt` into `~/.sbt/1.0/`, run
   `sbt-bsp-setup <checkout>` once per Scala checkout, and copy
   `git-hooks/post-checkout` into each such repository's `.git/hooks/`.
@@ -137,42 +137,49 @@ hook. Then:
 
 | Tool | Job |
 |---|---|
-| `load-project <name>` | Start a bench: open one project in IntelliJ and start its Claude session in a terminal there |
+| `bench open <project>` | Start a bench: open one project in IntelliJ and resume its saved sessions, or start a new one, in terminals there |
 | `intellij [paths]` | Start IntelliJ, cleaning up after the last run first; hand paths to it if it's already up |
-| `bench save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all. Given a directory, do it for that one bench |
+| `bench save` / `restore` | Quit IntelliJ with every session recorded; later, reopen it and resume them all. Given a project, do it for that one bench |
+| `bench prune` | Drop saved sessions whose directory is gone |
 | `sbt-bsp`, `sbt-bsp-setup` | Make IntelliJ, Claude and you share one sbt server per checkout |
 | `intellij-bsp` | Switch closed IntelliJ projects from sbt import to BSP |
-| load-project hook (`shell/agentic-intellij.sh`) | Runs queued session commands when a new IntelliJ terminal opens |
+| queue hook (`shell/agentic-intellij.sh`) | Runs queued session commands when a new IntelliJ terminal opens |
 
-## Starting sessions: `load-project`
+## Starting a bench: `bench open`
 
-`load-project api` looks up `api` in `~/.config/load-project/projects.tsv`
-(tab-separated: name, directory, `claude` arguments), opens that directory in
-IntelliJ, and starts `claude <arguments>` in a terminal in that window.
-`bin/load-project.tsv` in this repo is an example to copy from; set
-`LOAD_PROJECT_TABLE` to use a table somewhere else.
+`bench open api` opens the project in IntelliJ and resumes the sessions saved
+for it, with their original flags. `api` is a directory, or a name: a saved
+session's `-n` name, or the name of a saved session's directory. With nothing
+saved, it starts a new session named after the directory:
+
+```
+bench open ~/src/api                     # claude $BENCH_CLAUDE_ARGS -n api
+bench open ~/src/api -- --add-dir ../lib # claude --add-dir ../lib -n api
+```
+
+Once a `bench save` has recorded that session, its flags come back with it.
 
 It never types into a terminal. Instead it **queues** the command in
-`~/.cache/load-project/pending/<sha1 of the directory's real path>`, and the hook
+`~/.cache/bench/pending/<sha1 of the directory's real path>`, and the hook
 in `shell/agentic-intellij.sh` runs it when a new IntelliJ terminal opens in that directory:
 
 - The hook runs only in IntelliJ terminals (`TERMINAL_EMULATOR=JetBrains-JediTerm`).
 - The queue file holds one command per line, because several sessions can share
   a directory. Each new terminal takes the first line and removes it, under a
   lock so two tabs opening at once don't take the same line.
-- If no terminal picks the command up, `load-project` raises the window and
-  presses alt-F12 to open one.
+- If no terminal picks the command up within a minute, `bench` raises the
+  window and presses alt-F12 to open one.
 
 **direnv.** The hook runs while your shell's rc file is still loading, before direnv's own
 hook has fired, so a session started there wouldn't see the project's `.envrc`
 (secrets, per-checkout `TMPDIR`, nix tools). Queued commands therefore start
 with `eval "$(direnv export bash)"` (or `zsh`, whichever shell runs them). An unapproved `.envrc` stays unapproved;
-`load-project` warns instead of approving it.
+`bench` warns instead of approving it.
 
 ## Starting IntelliJ: `intellij`
 
-`intellij` owns the IDE process. `load-project` and
-`bench` both call it.
+`intellij` owns the IDE process; `bench` calls it. `INTELLIJ_APP` pins
+the IDE bundle to use.
 
 - **IntelliJ already running:** it hands the paths to the IDE and touches
   nothing else.
@@ -203,14 +210,16 @@ The cleanup removes what earlier runs leave behind:
 bench save       # before a reboot or IDE update
 bench restore    # after
 bench show       # what's running now, and what was saved
+bench prune      # drop saved sessions whose directory is gone
 ```
 
-Given a project directory, `save` and `restore` act on that one bench and
-leave IntelliJ and the other benches running:
+Given a project, a directory or a name as for `bench open`, `save` and
+`restore` act on that one bench and leave IntelliJ and the other benches
+running:
 
 ```
-bench save <dir>     # record the bench's sessions, close its window
-bench restore <dir>  # reopen the bench and resume them
+bench save <project>     # record the bench's sessions, close its window
+bench restore <project>  # reopen the bench and resume them
 ```
 
 **`save`** records every Claude session running in an IntelliJ terminal into
@@ -230,7 +239,11 @@ original flags. It then stops the sessions and quits IntelliJ.
 --resume <id> -n <name>`) for its directory and starts IntelliJ through
 `intellij`. Each terminal tab IntelliJ reopens picks up one queued session.
 
+- For one bench, it uses the newer of that bench's own save and its part of
+  the whole-IDE save.
 - Sessions already running, or whose directory is gone, are skipped.
+  `bench show` marks the gone ones, and `bench prune` drops them, deleting a
+  bench's own save when none of its sessions is left.
 - If a directory had more sessions than IntelliJ reopened tabs, open another
   terminal tab there (**+**) and the next session starts in it.
 
@@ -411,17 +424,14 @@ duplicated across Claude sessions.
 
 | Path | What |
 |---|---|
-| `bin/load-project` | project launcher |
-| `bin/load-project.tsv` | example project table |
-| `~/.config/load-project/projects.tsv` | your project table (not in the repo) |
 | `bin/intellij` | IDE launcher and cleanup |
-| `bin/bench` | save and restore benches |
+| `bin/bench` | open, save, restore and prune benches |
 | `bin/intellij-sessions` | the old name for `bench`; runs it |
 | `bin/sbt-bsp`, `bin/sbt-bsp-setup` | BSP launcher and per-checkout setup |
 | `bin/intellij-bsp` | switch closed IntelliJ projects from sbt import to BSP |
 | `sbt/global.sbt` | sbt global hook that keeps `.bsp/sbt.json` on `sbt-bsp` |
 | `git-hooks/post-checkout` | runs `intellij-bsp` on each new worktree, so IntelliJ opens it over BSP |
-| `shell/agentic-intellij.sh` | `PATH`, `SBT_OPTS`, the load-project hook |
+| `shell/agentic-intellij.sh` | `PATH`, `SBT_OPTS`, the queue hook |
 | `plugins/intellij-health/` | Claude Code plugin with the `intellij-health` skill: IDE log and memory health check |
 | `.claude-plugin/marketplace.json` | makes this repository a plugin marketplace |
 | `.claude/skills/intellij-health` | symlink, so sessions in this repository load the skill without installing |
@@ -429,7 +439,7 @@ duplicated across Claude sessions.
 | `PRIOR_ART.md` | related projects and how this one differs |
 | `AGENTS.md`, `CLAUDE.md` | instructions for coding agents working in this repository |
 | `~/.claude/CLAUDE.md` | imports `claude/sbt-client.md`, so every session uses `sbt --client` |
-| `~/.cache/load-project/pending/` | queued session commands, one file per directory |
+| `~/.cache/bench/pending/` | queued session commands, one file per directory |
 | `~/.cache/bench/state.json` | the last saved set of sessions |
 | `~/.cache/bench/projects/` | the last save of each bench saved on its own |
 | `~/logs/idea.log`, `~/logs/idea_backup.log`, `~/logs/bench.log` | logs |

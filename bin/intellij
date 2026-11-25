@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Launch IntelliJ IDEA, first cleaning up what earlier sessions left behind.
-# This owns the IDE process (cleanup, log capture, launch); load-project owns
+# This owns the IDE process (cleanup, log capture, launch); bench owns
 # opening a project in it and starting that project's Claude session.
 #
 # Usage: intellij [--dry-run] [--clean-only] [--which] [path ...]
@@ -29,13 +29,13 @@ while (( $# )); do
     shift
 done
 
-# The IDE bundle: LOAD_PROJECT_APP if set, which pins a version; else the
+# The IDE bundle: INTELLIJ_APP (formerly LOAD_PROJECT_APP) if set, which pins a version; else the
 # "IntelliJ IDEA*.app" in ~/Applications (Toolbox) or /Applications (a download
 # from jetbrains.com) with the highest build number. Toolbox can name each
 # version's bundle after it ("IntelliJ IDEA 2026.3.app"), so after an update
 # this picks the new one with no link to maintain.
-if [[ -n $LOAD_PROJECT_APP ]]; then
-    APP=$LOAD_PROJECT_APP
+if [[ -n ${INTELLIJ_APP:-$LOAD_PROJECT_APP} ]]; then
+    APP=${INTELLIJ_APP:-$LOAD_PROJECT_APP}
 else
     # CFBundleVersion is e.g. IU-262.10968.63; sort on the numbers after the dash.
     APP=$(for a in {$HOME,}/Applications/IntelliJ\ IDEA*.app(N-/); do
@@ -44,7 +44,7 @@ else
           done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -f2-)
 fi
 X="$APP/Contents/MacOS/idea"
-[[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found in ~/Applications or /Applications; set LOAD_PROJECT_APP to its .app"; exit 1 }
+[[ -x $X ]] || { print -u2 "intellij: no IntelliJ IDEA found in ~/Applications or /Applications; set INTELLIJ_APP to its .app"; exit 1 }
 (( WHICH )) && { print -r -- "$APP"; exit 0 }
 
 # With no paths given, open this repository itself.

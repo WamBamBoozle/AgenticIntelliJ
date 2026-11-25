@@ -150,7 +150,7 @@ footer{
 <p>They do not survive a restart, because default names are assigned rather than chosen. An interactive session gets its directory name plus a short suffix, a background agent gets a generated codename, and both are reassigned the next time the session starts. That is why <code>api-0a</code> came back as <code>api-58</code> halfway through this work.</p>
 <p>To make a name stick, give it when you start the session:</p>
 <pre><code>cd ../api &amp;&amp; claude -n api</code></pre>
-<p><code>-n</code> (or <code>--name</code>) sets the name the session is known by. Other sessions see it in their listing, address it by that name, and keep addressing it after a restart, as long as it is started the same way. The <code>load-project</code> table in this repository starts each session with its <code>-n</code> name, so restored sessions come back with the names their peers already know.</p>
+<p><code>-n</code> (or <code>--name</code>) sets the name the session is known by. Other sessions see it in their listing, address it by that name, and keep addressing it after a restart, as long as it is started the same way. <code>bench</code> in this repository starts each session with its <code>-n</code> name and restores it with the same one, so restored sessions come back with the names their peers already know.</p>
 <footer>
   Quoted passages are from the sessions' own messages, August 2026, with internal project names, paths and figures replaced by generic ones.
 </footer>

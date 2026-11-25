@@ -1,34 +1,47 @@
 #!/usr/bin/env python3
-"""bench: save and restore benches, so IntelliJ can restart without losing sessions.
+"""bench: open, save, restore and prune benches, so IntelliJ can restart without losing sessions.
 
 A bench is a project's IntelliJ window together with the Claude sessions in its
 terminal tabs.
 
 Usage:
-  bench save [--dry-run] [--force] [project dir]
+  bench open [--dry-run] <project> [-- claude args]
+      Start a bench: open the project in IntelliJ and resume the sessions
+      saved for it. With nothing saved, start a new session there named
+      after the directory, with the claude args given, or else
+      $BENCH_CLAUDE_ARGS.
+  bench save [--dry-run] [--force] [project]
       Save every bench: record every Claude session running in an IntelliJ
       terminal, stop them, and quit IntelliJ. Refuses while a session is busy, unless --force.
-      With a project directory: save just that bench, the project's window
-      and the sessions in it. Records only those sessions and closes only that
+      With a project: save just that bench, the project's window and the
+      sessions in it. Records only those sessions and closes only that
       window (File > Close Project); IntelliJ and the other benches keep running.
-  bench restore [--dry-run] [project dir]
+  bench restore [--dry-run] [project]
       Restore every bench: start IntelliJ (through the intellij script beside
       this one) with each recorded project and resume each session, with its
       original flags, in a terminal there.
-      With a project directory: reopen that bench, the project and the
-      sessions saved for it.
+      With a project: reopen that bench and resume its sessions, from its own
+      save or from the whole-IDE save, whichever is newer.
+  bench prune [--dry-run]
+      Drop saved sessions whose directory no longer exists, and project saves
+      left with none.
   bench show
-      List the sessions running now and the ones last saved.
+      List the sessions running now and the ones saved; "gone" marks a saved
+      session whose directory no longer exists.
 
-The cache moved from ~/.cache/intellij-sessions to ~/.cache/bench; the first
-run moves it across. intellij-sessions, beside this script, still runs bench.
+A project is a directory, or a name: a saved or running session's -n name, or
+the name of a saved session's directory.
 
-How restore works: each session's command is queued for its directory in
-~/.cache/load-project/pending, the same queue load-project uses. IntelliJ
-reopens its projects and their terminal tabs, and the load-project hook (shell/agentic-intellij.sh) runs the
-next queued command in each new terminal there. If a directory has more
-sessions than restored tabs, open another terminal tab in that window and the
-next session starts in it.
+State lives in ~/.cache/bench. The first run moves the saves from
+~/.cache/intellij-sessions and the queue from ~/.cache/load-project/pending.
+intellij-sessions, beside this script, still runs bench.
+
+How restore and open work: each session's command is queued for its directory
+in ~/.cache/bench/pending. IntelliJ reopens its projects and their terminal
+tabs, and the queue hook in shell/agentic-intellij.sh runs the next queued
+command in each new terminal there. If a directory has more sessions than
+restored tabs, open another terminal tab in that window and the next session
+starts in it.
 
 save can run from inside an IntelliJ terminal, even from a Claude session: the
 part that stops sessions and quits IntelliJ detaches first, so it survives.
@@ -47,13 +60,14 @@ OLD_STATE_DIR = os.path.join(HOME, ".cache", "intellij-sessions")  # before the 
 STATE = os.path.join(STATE_DIR, "state.json")
 PROJECT_STATES = os.path.join(STATE_DIR, "projects")
 LOG = os.path.join(HOME, "logs", "bench.log")
-PENDING = os.path.join(HOME, ".cache", "load-project", "pending")
+PENDING = os.path.join(STATE_DIR, "pending")
+OLD_PENDING = os.path.join(HOME, ".cache", "load-project", "pending")  # before load-project went
 SESSIONS = os.path.join(HOME, ".claude", "sessions")
 INTELLIJ = os.path.join(os.path.dirname(os.path.realpath(__file__)), "intellij")
 BUNDLE_ID = "com.jetbrains.intellij"
 IDE_RE = "/Contents/MacOS/idea"
 
-# Same prefix load-project queues: a command eval'd while the shell rc file is still
+# A command eval'd while the shell rc file is still
 # sourcing runs before direnv's hook, so the project's .envrc is loaded here.
 DIRENV = 'if command -v direnv >/dev/null 2>&1; then eval "$(direnv export ${ZSH_VERSION:+zsh}${BASH_VERSION:+bash})"; fi; '
 
@@ -107,7 +121,7 @@ def ide_pids():
 
 
 def queue_key(path):
-    # The load-project hook (shell/agentic-intellij.sh) keys on `printf '%s' "$(pwd -P)" | shasum`.
+    # The queue hook (shell/agentic-intellij.sh) keys on `printf '%s' "$(pwd -P)" | shasum`.
     return hashlib.sha1(os.path.realpath(path).encode()).hexdigest()
 
 
@@ -158,13 +172,21 @@ def running_sessions():
     return sorted(found, key=lambda s: (s["cwd"], s["name"] or ""))
 
 
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
 def tilde(p):
     return "~" + p[len(HOME):] if p.startswith(HOME) else p
 
 
-def table(sessions):
+def table(sessions, saved=False):
     for s in sessions:
-        print(f"  {s['name'] or '(unnamed)':24} {s.get('status') or '':6} {tilde(s['cwd'])}")
+        status = s.get("status") or ""
+        if saved and not os.path.isdir(s["cwd"]):
+            status = "gone"
+        print(f"  {s['name'] or '(unnamed)':24} {status:6} {tilde(s['cwd'])}")
 
 
 def project_state(project):
@@ -368,7 +390,7 @@ def quit_all():
     session keeps running and nothing is lost.
     """
     time.sleep(2)  # let a calling session print its last words
-    sessions = json.load(open(STATE))["sessions"]
+    sessions = load(STATE)["sessions"]
 
     log("asking IntelliJ to quit (AppleScript)")
     osa(f'tell application id "{BUNDLE_ID}" to quit')
@@ -396,7 +418,7 @@ def quit_all():
 # ---------------------------------------------------------------- restore
 
 def raise_terminal(path):
-    """Raise the project's window and show its Terminal, as load-project does."""
+    """Raise the project's window and show its Terminal (alt-F12)."""
     return window(path, "terminal") == "yes"
 
 
@@ -408,31 +430,100 @@ def queued(path):
         return 0
 
 
-def restore(dry, project=None):
-    state_file = project_state(project) if project else STATE
-    if not os.path.exists(state_file):
-        say(f"nothing saved yet ({tilde(state_file)})")
-        return 1
-    state = json.load(open(state_file))
+def saved_for(project):
+    """The newer of the project's own save and its part of the whole-IDE save,
+    as (savedAt, sessions); None when neither has it."""
+    found = []
+    path = project_state(project)
+    if os.path.exists(path):
+        st = load(path)
+        found.append((st["savedAt"], st["sessions"]))
+    if os.path.exists(STATE):
+        st = load(STATE)
+        mine = [s for s in st["sessions"] if in_project(s["cwd"], project)]
+        if mine:
+            found.append((st["savedAt"], mine))
+    return max(found, key=lambda f: f[0]) if found else None
+
+
+def new_session(project, args):
+    """A command that starts a new session named after the project. Without
+    args, BENCH_CLAUDE_ARGS supplies the flags."""
+    if not args:
+        args = shlex.split(os.environ.get("BENCH_CLAUDE_ARGS", ""))
+    line = " ".join(shlex.quote(a) for a in ["claude", *args, "-n", project_name(project)])
+    if os.path.exists(os.path.join(project, ".envrc")):
+        line = DIRENV + line
+    return {"name": project_name(project), "sessionId": None, "cwd": project,
+            "status": "new", "command": line}
+
+
+def direnv_blocked(path):
+    """True when the directory's .envrc exists and direnv hasn't approved it.
+    Approving one is the operator's call, so restore only warns."""
+    if not os.path.exists(os.path.join(path, ".envrc")):
+        return False
+    try:
+        out = subprocess.run(["direnv", "status", "--json"], cwd=path, capture_output=True, text=True).stdout
+        rc = (json.loads(out).get("state") or {}).get("foundRC") or {}
+    except (OSError, ValueError):
+        return False
+    return bool(rc) and rc.get("allowed") != 0
+
+
+def restore(dry, project=None, start_new=False, args=()):
+    """Restore every bench, or one project's. With start_new (bench open), a
+    project with nothing saved gets a new session instead."""
+    if project:
+        saved = saved_for(project)
+        if saved is None and not start_new:
+            say(f"nothing saved for {tilde(project)}; to start a new session there, run: "
+                f"bench open {tilde(project)}")
+            return 1
+        saved_at, sessions = saved or (None, [])
+    else:
+        if not os.path.exists(STATE):
+            say(f"nothing saved yet ({tilde(STATE)})")
+            return 1
+        st = load(STATE)
+        saved_at, sessions = st["savedAt"], st["sessions"]
     live = {s["sessionId"] for s in running_sessions()}
     by_dir, skipped = {}, []
-    for s in state["sessions"]:
+    for s in sessions:
         if s["sessionId"] in live:
             skipped.append(f"{s['name'] or s['sessionId']} (already running)")
         elif not os.path.isdir(s["cwd"]):
-            skipped.append(f"{s['name'] or s['sessionId']} (directory gone: {tilde(s['cwd'])})")
+            skipped.append(f"{s['name'] or s['sessionId']} (directory gone: {tilde(s['cwd'])}; "
+                           "bench prune drops it)")
         else:
             by_dir.setdefault(s["cwd"], []).append(s)
-    say(f"restoring {sum(map(len, by_dir.values()))} session(s) saved {state['savedAt']}:")
+    if project and start_new and not sessions:
+        s = new_session(project, args)
+        by_dir[project] = [s]
+        say(f"nothing saved for {tilde(project)}; starting a new session:")
+    else:
+        say(f"restoring {sum(map(len, by_dir.values()))} session(s) saved {saved_at}:")
     table([s for ss in by_dir.values() for s in ss])
     for k in skipped:
         say(f"skipping {k}")
+    for d in by_dir:
+        if direnv_blocked(d):
+            say(f"{tilde(d)}/.envrc is not approved, so its sessions start without the "
+                f"project environment; to approve it: direnv allow {tilde(d)}")
     if dry:
         for d, ss in by_dir.items():
             for s in ss:
                 print(f"  [{tilde(d)}] {s['command']}")
         return 0
+    if not by_dir and not project:
+        return 0
+    # Fail before queueing: a command left queued with no IDE to open it would
+    # run in the next unrelated terminal in that directory.
+    if subprocess.run([INTELLIJ, "--which"], capture_output=True).returncode:
+        say("no IntelliJ found; run: intellij --which")
+        return 1
     if not by_dir:
+        subprocess.run([INTELLIJ, project])  # reopen the window; it had no sessions
         return 0
 
     # Only a window that is already open misses the queue: a project IntelliJ
@@ -480,37 +571,134 @@ def show():
     say(f"running now in IntelliJ terminals ({len(now)}):")
     table(now)
     if os.path.exists(STATE):
-        st = json.load(open(STATE))
+        st = load(STATE)
         say(f"last saved {st['savedAt']} ({len(st['sessions'])}):")
-        table(st["sessions"])
+        table(st["sessions"], saved=True)
     else:
         say("nothing saved yet")
     if os.path.isdir(PROJECT_STATES):
         for name in sorted(os.listdir(PROJECT_STATES)):
-            st = json.load(open(os.path.join(PROJECT_STATES, name)))
+            st = load(os.path.join(PROJECT_STATES, name))
             say(f"saved {st['savedAt']} for {tilde(st['project'])} ({len(st['sessions'])}):")
-            table(st["sessions"])
+            table(st["sessions"], saved=True)
     return 0
 
 
+# ---------------------------------------------------------------- prune
+
+def prune(dry):
+    """Drop saved sessions whose directory is gone, and project saves left
+    with none or whose project is gone."""
+    drops = 0
+    if os.path.exists(STATE):
+        st = load(STATE)
+        gone = [s for s in st["sessions"] if not os.path.isdir(s["cwd"])]
+        if gone:
+            say(f"{'would drop' if dry else 'dropping'} from the whole-IDE save:")
+            table(gone)
+            drops += len(gone)
+            if not dry:
+                st["sessions"] = [s for s in st["sessions"] if s not in gone]
+                with open(STATE, "w") as f:
+                    json.dump(st, f, indent=2)
+    if os.path.isdir(PROJECT_STATES):
+        for name in sorted(os.listdir(PROJECT_STATES)):
+            path = os.path.join(PROJECT_STATES, name)
+            st = load(path)
+            gone = [s for s in st["sessions"] if not os.path.isdir(s["cwd"])]
+            if not os.path.isdir(st["project"]) or (gone and len(gone) == len(st["sessions"])):
+                say(f"{'would delete' if dry else 'deleting'} the save for {tilde(st['project'])}:")
+                table(st["sessions"])
+                drops += len(st["sessions"]) or 1
+                if not dry:
+                    os.remove(path)
+            elif gone:
+                say(f"{'would drop' if dry else 'dropping'} from the save for {tilde(st['project'])}:")
+                table(gone)
+                drops += len(gone)
+                if not dry:
+                    st["sessions"] = [s for s in st["sessions"] if s not in gone]
+                    with open(path, "w") as f:
+                        json.dump(st, f, indent=2)
+    if not drops:
+        say("every saved directory still exists; nothing to prune")
+    elif not dry:
+        log(f"pruned {drops}")
+    return 0
+
+
+# ---------------------------------------------------------------- names
+
+def saved_sessions():
+    """Every saved and running session, as (session, project dir)."""
+    out = [(s, s["cwd"]) for s in running_sessions()]
+    if os.path.exists(STATE):
+        out += [(s, s["cwd"]) for s in load(STATE)["sessions"]]
+    if os.path.isdir(PROJECT_STATES):
+        for name in os.listdir(PROJECT_STATES):
+            st = load(os.path.join(PROJECT_STATES, name))
+            out += [(s, st["project"]) for s in st["sessions"]]
+    return out
+
+
+def resolve(arg):
+    """A directory, or a name: a session's -n name, else a project directory's
+    name, exact before case-insensitive. Returns (path, error)."""
+    path = os.path.expanduser(arg)
+    if os.path.isdir(path):
+        return os.path.realpath(path), None
+    known = saved_sessions()
+    for same in (str.__eq__, lambda a, b: a.lower() == b.lower()):
+        for key in (lambda s, d: s.get("name") or "", lambda s, d: os.path.basename(d)):
+            dirs = sorted({d for s, d in known if same(key(s, d), arg)})
+            if len(dirs) == 1:
+                return os.path.realpath(dirs[0]), None
+            if len(dirs) > 1:
+                return None, f"{arg} names more than one directory; give one of: " + \
+                    ", ".join(map(tilde, dirs))
+    names = sorted({s.get("name") for s, d in known if s.get("name")}, key=str.lower)
+    return None, f"{arg}: not a directory or a saved session's name. Known: {' '.join(names)}"
+
+
 def move_old_state():
-    """Carry saves made under the old name, intellij-sessions, across once."""
+    """Carry state made under old names across once: saves from
+    intellij-sessions, and the queue load-project kept."""
     if os.path.isdir(OLD_STATE_DIR) and not os.path.exists(STATE_DIR):
         os.rename(OLD_STATE_DIR, STATE_DIR)
+    if os.path.isdir(OLD_PENDING):
+        os.makedirs(PENDING, exist_ok=True)
+        for name in os.listdir(OLD_PENDING):
+            if name.endswith(".lock"):
+                continue
+            src, dst = os.path.join(OLD_PENDING, name), os.path.join(PENDING, name)
+            with open(src) as f, open(dst, "a") as g:
+                g.write(f.read())
+            os.remove(src)
+        try:
+            os.rmdir(OLD_PENDING)
+            os.rmdir(os.path.dirname(OLD_PENDING))
+        except OSError:
+            pass
 
 
 def main(argv):
     move_old_state()
     cmd = argv[0] if argv else "show"
-    flags = {a for a in argv[1:] if a.startswith("-")}
-    paths = [a for a in argv[1:] if not a.startswith("-")]
-    if len(paths) > 1 or (paths and cmd not in ("save", "restore", "_close")):
+    rest, claude_args = argv[1:], []
+    if "--" in rest:
+        rest, claude_args = rest[:rest.index("--")], rest[rest.index("--") + 1:]
+    flags = {a for a in rest if a.startswith("-")}
+    paths = [a for a in rest if not a.startswith("-")]
+    if (len(paths) > 1 or (paths and cmd not in ("save", "restore", "open", "_close"))
+            or (cmd == "open" and not paths) or (claude_args and cmd != "open")):
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    project = os.path.realpath(os.path.expanduser(paths[0])) if paths else None
-    if project and not os.path.isdir(project):
-        say(f"{paths[0]}: not a directory")
-        return 1
+    project = None
+    if paths:
+        project, err = resolve(paths[0])
+        if err:
+            say(err)
+            return 1
     if cmd in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
@@ -518,6 +706,10 @@ def main(argv):
         return save("--dry-run" in flags or "-n" in flags, "--force" in flags, project)
     if cmd == "restore":
         return restore("--dry-run" in flags or "-n" in flags, project)
+    if cmd == "open":
+        return restore("--dry-run" in flags or "-n" in flags, project, True, claude_args)
+    if cmd == "prune":
+        return prune("--dry-run" in flags or "-n" in flags)
     if cmd == "show":
         return show()
     if cmd == "_quit":
